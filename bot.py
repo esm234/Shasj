@@ -769,7 +769,7 @@ def main():
     
     # Message handlers
     # Admin group messages (replies or broadcast messages)
-    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.DOCUMENT.ALL ), handle_admin_reply_or_broadcast))
+    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL ), handle_admin_reply_or_broadcast))
 
     # User messages (private chats)
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_user_message))
