@@ -143,7 +143,7 @@ async def set_menu_button(application: Application) -> None:
 
 async def start_command(update: Update, context: CallbackContext) -> None:
     effective_obj = update.callback_query or update
-    user = effective_obj.from_user
+    user = update.effective_user
     if not user: return
     
     keyboard = [[InlineKeyboardButton("📬 أسئلتي المرسلة", callback_data="orders_list")], [InlineKeyboardButton("💡 كيف أستخدم البوت؟", callback_data="instructions")]]
