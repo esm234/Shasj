@@ -86,13 +86,13 @@ def save_users_data():
     except Exception as e:
         logger.error(f"Failed to save users data: {e}")
 
-# NEW HELPER FUNCTION TO FIX THE ERROR
+# HELPER FUNCTION to escape markdown characters
 def escape_legacy_markdown(text: str) -> str:
     """Escapes characters for Telegram's legacy Markdown."""
     escape_chars = r'_*`['
     return ''.join(['\\' + char if char in escape_chars else char for char in text])
 
-# Initialize data
+# Initialize data from files on startup
 questions_data = load_data(DATA_FILE)
 replies_data = load_data(REPLIES_FILE)
 banned_users = load_data(BANS_FILE)
@@ -103,7 +103,10 @@ def get_user_questions(user_id: int) -> List[Dict]:
     return [q for q in questions_data.values() if q['user_id'] == user_id]
 
 def get_all_user_ids() -> List[int]:
-    return list(set(q['user_id'] for q in questions_data.values()))
+    # Gathers unique user IDs from both questions and active user list for broadcasting
+    question_user_ids = set(q['user_id'] for q in questions_data.values())
+    active_user_ids = set(int(uid) for uid in active_users.keys())
+    return list(question_user_ids.union(active_user_ids))
 
 def is_user_banned(user_id: int) -> bool:
     return str(user_id) in banned_users
@@ -142,9 +145,11 @@ async def set_menu_button(application: Application) -> None:
         logger.error(f"Failed to set menu button: {e}")
 
 async def start_command(update: Update, context: CallbackContext) -> None:
-    effective_obj = update.callback_query or update
     user = update.effective_user
     if not user: return
+    
+    # Use callback_query if available, otherwise use the message object
+    effective_obj = update.callback_query or update.message
     
     keyboard = [[InlineKeyboardButton("📬 أسئلتي المرسلة", callback_data="orders_list")], [InlineKeyboardButton("💡 كيف أستخدم البوت؟", callback_data="instructions")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -174,10 +179,9 @@ async def start_command(update: Update, context: CallbackContext) -> None:
     save_users_data()
     
     if update.callback_query:
-        await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await effective_obj.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
-        await effective_obj.message.reply_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-
+        await effective_obj.reply_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def button_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
@@ -223,6 +227,7 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
         await query.edit_message_text(instructions_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 العودة", callback_data="main_menu")]]), parse_mode=ParseMode.MARKDOWN)
     
     elif query.data == "main_menu":
+        # Call start_command by passing the query object which simulates an update
         await start_command(query, context)
 
 async def how_to_reply_callback(update: Update, context: CallbackContext) -> None:
@@ -247,7 +252,6 @@ async def export_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     try:
-        # Note: Corrected to handle four files
         for file_path, name in {DATA_FILE: "questions", REPLIES_FILE: "replies", USERS_FILE: "users", BANS_FILE: "banned"}.items():
             if os.path.exists(file_path):
                 with open(file_path, 'rb') as f:
@@ -256,9 +260,9 @@ async def export_command(update: Update, context: CallbackContext) -> None:
     except Exception as e:
         await update.message.reply_text(f"❌ حدث خطأ أثناء التصدير: {e}")
 
-### --- START: NEW IMPORT COMMAND --- ###
+# --- UPDATED IMPORT COMMAND (uses Reply method) ---
 async def import_command(update: Update, context: CallbackContext) -> None:
-    """Handles the /import command to restore data from a JSON file."""
+    """Handles the /import command to restore data from a JSON file by replying to the file."""
     global questions_data, replies_data, active_users, banned_users
 
     # 1. Security Check: Admin Group Only
@@ -276,17 +280,17 @@ async def import_command(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text(f"خطأ في التحقق من صلاحيات المشرف: {e}")
         return
 
-    # 3. Input Check: Ensure a file was sent
-    if not update.message.document:
+    # 3. Input Check: Ensure the command is a REPLY to a message that CONTAINS a document
+    if not update.message.reply_to_message or not update.message.reply_to_message.document:
         await update.message.reply_text(
-            "⚠️ لاستخدام هذا الأمر، أرسل ملف الـ JSON الذي تريد استيراده واكتب `/import` في التعليق (caption)."
+            "⚠️ لاستخدام هذا الأمر، أرسل ملف الـ JSON أولاً، ثم قم بالرد (Reply) على رسالة الملف بالأمر `/import`."
         )
         return
 
-    # 4. Process the file
-    doc = update.message.document
+    # 4. Process the file from the replied-to message
+    doc = update.message.reply_to_message.document
     file_name = doc.file_name.lower()
-    target_file, data_variable_name, load_func_name = None, None, None
+    target_file = None
 
     # Identify which file to overwrite based on filename
     if "questions" in file_name:
@@ -312,7 +316,7 @@ async def import_command(update: Update, context: CallbackContext) -> None:
         with open(target_file, 'wb') as f:
             f.write(file_bytes)
         
-        # IMPORTANT: Reload the data into memory
+        # IMPORTANT: Reload all data into memory to apply changes immediately
         questions_data = load_data(DATA_FILE)
         replies_data = load_data(REPLIES_FILE)
         active_users = load_users_data()
@@ -324,8 +328,7 @@ async def import_command(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text("❌ خطأ: الملف المرفق ليس ملف JSON صالح.")
     except Exception as e:
         await update.message.reply_text(f"حدث خطأ غير متوقع: {e}")
-### --- END: NEW IMPORT COMMAND --- ###
-
+# --- END OF IMPORT COMMAND ---
 
 async def broadcast_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
@@ -400,9 +403,7 @@ async def handle_user_message(update: Update, context: CallbackContext) -> None:
     if len(questions_data) > 0 and len(questions_data) % 50 == 0:
         await context.bot.send_message(ADMIN_GROUP_ID, text=f"🎉 تهانينا! وصلنا إلى المشاركة رقم {len(questions_data)}.")
 
-# UPDATED FUNCTION
 async def forward_to_admin_group_new(context: CallbackContext, q_data: Dict):
-    # Escape user data to prevent Markdown parsing errors
     safe_fullname = escape_legacy_markdown(q_data['fullname'])
     safe_username = escape_legacy_markdown(q_data['username']) if q_data['username'] else "غير متوفر"
     
@@ -410,7 +411,7 @@ async def forward_to_admin_group_new(context: CallbackContext, q_data: Dict):
     replies_data[q_data['question_id']] = {'user_id': q_data['user_id'], 'user_message_id': q_data['message_id'], 'admin_message_id': None}
     
     try:
-        sent_message, caption = None, user_info + q_data['content']
+        sent_message, caption = None, user_info + (q_data.get('content') or "")
         if q_data['message_type'] == "نص": sent_message = await context.bot.send_message(ADMIN_GROUP_ID, text=caption, parse_mode=ParseMode.MARKDOWN)
         elif q_data['message_type'] == "صورة": sent_message = await context.bot.send_photo(ADMIN_GROUP_ID, photo=q_data['file_id'], caption=caption, parse_mode=ParseMode.MARKDOWN)
         elif q_data['message_type'] == "فيديو": sent_message = await context.bot.send_video(ADMIN_GROUP_ID, video=q_data['file_id'], caption=caption, parse_mode=ParseMode.MARKDOWN)
@@ -444,13 +445,11 @@ async def handle_user_reply(update: Update, context: CallbackContext) -> None:
     try:
         reply_header = f"رد من الطالب (ID: `{replies_data[question_id]['user_id']}`)"
         
-        # We copy the message to preserve everything (stickers, videos, etc.)
         sent_to_admin = await update.message.copy(
             chat_id=ADMIN_GROUP_ID, 
             reply_to_message_id=admin_msg_id
         )
         
-        # Then, we send the identifying information as a reply to the copied message
         await sent_to_admin.reply_text(text=reply_header, parse_mode=ParseMode.MARKDOWN)
 
         if 'admin_thread_message_ids' not in replies_data[question_id]: replies_data[question_id]['admin_thread_message_ids'] = []
@@ -506,7 +505,6 @@ async def setup_commands(application: Application) -> None:
     user_commands = [BotCommand("start", "🚀 بدء/عودة للقائمة"), BotCommand("help", "❓ مساعدة")]
     await application.bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
-    ### NEW ### - Added "import" command to admin commands
     admin_commands = [
         BotCommand("stats", "📊 الإحصائيات"),
         BotCommand("export", "📁 تصدير البيانات"),
@@ -516,15 +514,17 @@ async def setup_commands(application: Application) -> None:
         BotCommand("unban", "✅ رفع الحظر"),
         BotCommand("banned", "📋 المحظورين")
     ]
-    await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_GROUP_ID))
-    await application.bot.set_my_commands([])
+    if ADMIN_GROUP_ID != 0:
+      await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_GROUP_ID))
+    # Clear global commands if you want admin commands only in the group
+    await application.bot.set_my_commands([]) 
     logger.info("Bot commands have been set successfully.")
 
 async def handle_admin_reply_or_broadcast(update: Update, context: CallbackContext) -> None:
     if not update.effective_user: return
     user_id = update.effective_user.id
     if update.message and update.message.reply_to_message:
-        if "وضع الإرسال الجماعي" in (update.message.reply_to_message.text or ""):
+        if waiting_for_broadcast.get(user_id, False): # Prioritize broadcast if admin is in that mode
             await handle_broadcast_message(update, context)
             waiting_for_broadcast[user_id] = False
         else:
@@ -545,7 +545,6 @@ def main():
     application.add_handler(CommandHandler("ban", ban_command))
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("banned", banned_list_command))
-    ### NEW ### - Added handler for the import command
     application.add_handler(CommandHandler("import", import_command))
     
     # Callbacks
