@@ -174,7 +174,7 @@ async def start_command(update: Update, context: CallbackContext) -> None:
     save_users_data()
     
     if update.callback_query:
-        await effective_obj.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await effective_obj.message.reply_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
@@ -247,6 +247,7 @@ async def export_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     try:
+        # Note: Corrected to handle four files
         for file_path, name in {DATA_FILE: "questions", REPLIES_FILE: "replies", USERS_FILE: "users", BANS_FILE: "banned"}.items():
             if os.path.exists(file_path):
                 with open(file_path, 'rb') as f:
@@ -254,6 +255,77 @@ async def export_command(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text(f"✅ **اكتمل تصدير البيانات بنجاح**", parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         await update.message.reply_text(f"❌ حدث خطأ أثناء التصدير: {e}")
+
+### --- START: NEW IMPORT COMMAND --- ###
+async def import_command(update: Update, context: CallbackContext) -> None:
+    """Handles the /import command to restore data from a JSON file."""
+    global questions_data, replies_data, active_users, banned_users
+
+    # 1. Security Check: Admin Group Only
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+
+    # 2. Security Check: User must be an admin in the group
+    try:
+        chat_admins = await context.bot.get_chat_administrators(ADMIN_GROUP_ID)
+        admin_ids = [admin.user.id for admin in chat_admins]
+        if update.effective_user.id not in admin_ids:
+            await update.message.reply_text("🚫 هذا الأمر مخصص لمشرفي الجروب فقط.")
+            return
+    except Exception as e:
+        await update.message.reply_text(f"خطأ في التحقق من صلاحيات المشرف: {e}")
+        return
+
+    # 3. Input Check: Ensure a file was sent
+    if not update.message.document:
+        await update.message.reply_text(
+            "⚠️ لاستخدام هذا الأمر، أرسل ملف الـ JSON الذي تريد استيراده واكتب `/import` في التعليق (caption)."
+        )
+        return
+
+    # 4. Process the file
+    doc = update.message.document
+    file_name = doc.file_name.lower()
+    target_file, data_variable_name, load_func_name = None, None, None
+
+    # Identify which file to overwrite based on filename
+    if "questions" in file_name:
+        target_file = DATA_FILE
+    elif "replies" in file_name:
+        target_file = REPLIES_FILE
+    elif "users" in file_name:
+        target_file = USERS_FILE
+    elif "banned" in file_name:
+        target_file = BANS_FILE
+    else:
+        await update.message.reply_text("❌ لم يتم التعرف على الملف. يجب أن يحتوي اسم الملف على `questions`, `replies`, `users`, or `banned`.")
+        return
+
+    try:
+        json_file = await doc.get_file()
+        file_bytes = await json_file.download_as_bytearray()
+        
+        # Validate that the file is proper JSON before saving
+        json.loads(file_bytes.decode('utf-8'))
+        
+        # Save the new file
+        with open(target_file, 'wb') as f:
+            f.write(file_bytes)
+        
+        # IMPORTANT: Reload the data into memory
+        questions_data = load_data(DATA_FILE)
+        replies_data = load_data(REPLIES_FILE)
+        active_users = load_users_data()
+        banned_users = load_data(BANS_FILE)
+        
+        await update.message.reply_text(f"✅ تم استيراد وتحديث ملف `{target_file}` بنجاح.")
+
+    except json.JSONDecodeError:
+        await update.message.reply_text("❌ خطأ: الملف المرفق ليس ملف JSON صالح.")
+    except Exception as e:
+        await update.message.reply_text(f"حدث خطأ غير متوقع: {e}")
+### --- END: NEW IMPORT COMMAND --- ###
+
 
 async def broadcast_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
@@ -263,7 +335,7 @@ async def broadcast_command(update: Update, context: CallbackContext) -> None:
 
 async def help_command(update: Update, context: CallbackContext) -> None:
     is_admin = update.effective_chat and update.effective_chat.id == ADMIN_GROUP_ID
-    help_text = ("**🛠️ قائمة أوامر المشرفين:**\n\n/stats - عرض الإحصائيات\n/export - استخراج البيانات\n/broadcast - إرسال رسالة جماعية\n/ban `user_id` `[reason]`\n/unban `user_id`\n/banned - قائمة المحظورين") if is_admin else ("**👋 مرحباً بك في قسم المساعدة!**\n\n/start - بدء/عودة للقائمة الرئيسية\n/help - عرض هذه الرسالة")
+    help_text = ("**🛠️ قائمة أوامر المشرفين:**\n\n/stats - عرض الإحصائيات\n/export - استخراج البيانات\n/import - استيراد البيانات\n/broadcast - إرسال رسالة جماعية\n/ban `user_id` `[reason]`\n/unban `user_id`\n/banned - قائمة المحظورين") if is_admin else ("**👋 مرحباً بك في قسم المساعدة!**\n\n/start - بدء/عودة للقائمة الرئيسية\n/help - عرض هذه الرسالة")
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 async def ban_command(update: Update, context: CallbackContext) -> None:
@@ -433,7 +505,17 @@ async def handle_broadcast_message(update: Update, context: CallbackContext) -> 
 async def setup_commands(application: Application) -> None:
     user_commands = [BotCommand("start", "🚀 بدء/عودة للقائمة"), BotCommand("help", "❓ مساعدة")]
     await application.bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
-    admin_commands = [BotCommand("stats", "📊 الإحصائيات"), BotCommand("export", "📁 تصدير البيانات"), BotCommand("broadcast", "📡 رسالة جماعية"), BotCommand("ban", "🚫 حظر"), BotCommand("unban", "✅ رفع الحظر"), BotCommand("banned", "📋 المحظورين")]
+    
+    ### NEW ### - Added "import" command to admin commands
+    admin_commands = [
+        BotCommand("stats", "📊 الإحصائيات"),
+        BotCommand("export", "📁 تصدير البيانات"),
+        BotCommand("import", "📥 استيراد البيانات"),
+        BotCommand("broadcast", "📡 رسالة جماعية"),
+        BotCommand("ban", "🚫 حظر"),
+        BotCommand("unban", "✅ رفع الحظر"),
+        BotCommand("banned", "📋 المحظورين")
+    ]
     await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_GROUP_ID))
     await application.bot.set_my_commands([])
     logger.info("Bot commands have been set successfully.")
@@ -463,6 +545,8 @@ def main():
     application.add_handler(CommandHandler("ban", ban_command))
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("banned", banned_list_command))
+    ### NEW ### - Added handler for the import command
+    application.add_handler(CommandHandler("import", import_command))
     
     # Callbacks
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(orders_list|instructions|main_menu)$"))
