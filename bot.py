@@ -5,6 +5,7 @@ import os
 import logging
 import uuid
 import asyncio
+import math
 from typing import Dict, List
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
@@ -100,10 +101,10 @@ active_users = load_users_data()
 
 # Helper functions for question management
 def get_user_questions(user_id: int) -> List[Dict]:
-    return [q for q in questions_data.values() if q['user_id'] == user_id]
+    user_q = [q for q in questions_data.values() if q['user_id'] == user_id]
+    return sorted(user_q, key=lambda x: x['timestamp'], reverse=True)
 
 def get_all_user_ids() -> List[int]:
-    # Gathers unique user IDs from both questions and active user list for broadcasting
     question_user_ids = set(q['user_id'] for q in questions_data.values())
     active_user_ids = set(int(uid) for uid in active_users.keys())
     return list(question_user_ids.union(active_user_ids))
@@ -148,10 +149,7 @@ async def start_command(update: Update, context: CallbackContext) -> None:
     user = update.effective_user
     if not user: return
     
-    # Use callback_query if available, otherwise use the message object
-    effective_obj = update.callback_query or update.message
-    
-    keyboard = [[InlineKeyboardButton("📬 أسئلتي المرسلة", callback_data="orders_list")], [InlineKeyboardButton("💡 كيف أستخدم البوت؟", callback_data="instructions")]]
+    keyboard = [[InlineKeyboardButton("📬 أسئلتي المرسلة", callback_data="orders_list:page:0")], [InlineKeyboardButton("💡 كيف أستخدم البوت؟", callback_data="instructions")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     user_name = user.first_name or "عزيزي"
@@ -181,33 +179,53 @@ async def start_command(update: Update, context: CallbackContext) -> None:
     if update.callback_query:
         await update.callback_query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
-        await effective_obj.reply_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
-# --- CORRECTED BUTTON HANDLER ---
 async def button_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query or not query.from_user: return
     await query.answer()
-    
-    if query.data == "orders_list":
+
+    if query.data.startswith("orders_list"):
         user_id = query.from_user.id
         user_questions = get_user_questions(user_id)
+
         if not user_questions:
             await query.edit_message_text("📪 ليس لديك أي أسئلة مرسلة بعد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 العودة", callback_data="main_menu")]]))
             return
-        
-        orders_text = f"📬 **قائمة أسئلتك التي أرسلتها:** (العدد: {len(user_questions)})\n\n"
-        for i, q in enumerate(user_questions, 1):
+
+        try:
+            page = int(query.data.split(':')[-1])
+        except (ValueError, IndexError):
+            page = 0
+
+        QUESTIONS_PER_PAGE = 5
+        total_pages = math.ceil(len(user_questions) / QUESTIONS_PER_PAGE)
+        start_index = page * QUESTIONS_PER_PAGE
+        end_index = start_index + QUESTIONS_PER_PAGE
+        questions_on_page = user_questions[start_index:end_index]
+
+        orders_text = f"📬 *قائمة أسئلتك (الأحدث أولاً):*\n\n"
+        for i, q in enumerate(questions_on_page, start=start_index + 1):
             ts = datetime.fromisoformat(q['timestamp']).strftime('%Y-%m-%d %H:%M')
-            
-            # Escape user content to prevent Markdown errors
-            raw_preview = q.get('content', '')[:50] + "..." if len(q.get('content', '')) > 50 else q.get('content', '')
-            safe_preview = escape_legacy_markdown(raw_preview)
-            
-            orders_text += f"{i}. **نوع:** {q['message_type']} - **تاريخ:** {ts}\n   `{safe_preview}`\n\n"
+            raw_preview = q.get('content', '')[:40] + "..." if len(q.get('content', '')) > 40 else q.get('content', '')
+            safe_preview = escape_legacy_markdown(raw_preview) if raw_preview else "محتوى وسائط"
+            orders_text += f"*{i}.* *نوع:* {q['message_type']} - *تاريخ:* {ts}\n   `{safe_preview}`\n\n"
+
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️ السابق", callback_data=f"orders_list:page:{page - 1}"))
         
-        await query.edit_message_text(orders_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 العودة", callback_data="main_menu")]]), parse_mode=ParseMode.MARKDOWN)
-    
+        nav_buttons.append(InlineKeyboardButton(f"صفحة {page + 1}/{total_pages}", callback_data="noop"))
+
+        if end_index < len(user_questions):
+            nav_buttons.append(InlineKeyboardButton("التالي ▶️", callback_data=f"orders_list:page:{page + 1}"))
+        
+        keyboard = [nav_buttons, [InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(orders_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
     elif query.data == "instructions":
         instructions_text = """
 💡 **طريقة استخدام البوت:**
@@ -232,9 +250,7 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
         await query.edit_message_text(instructions_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 العودة", callback_data="main_menu")]]), parse_mode=ParseMode.MARKDOWN)
     
     elif query.data == "main_menu":
-        # Pass the original 'update' object, not the 'query' object
         await start_command(update, context)
-# --- END OF CORRECTED BUTTON HANDLER ---
 
 async def how_to_reply_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
@@ -435,16 +451,23 @@ async def handle_user_reply(update: Update, context: CallbackContext) -> None:
     try:
         reply_header = f"رد من الطالب (ID: `{replies_data[question_id]['user_id']}`)"
         
-        sent_to_admin = await update.message.copy(
+        sent_to_admin_id_obj = await update.message.copy(
             chat_id=ADMIN_GROUP_ID, 
             reply_to_message_id=admin_msg_id
         )
         
-        await sent_to_admin.reply_text(text=reply_header, parse_mode=ParseMode.MARKDOWN)
+        await context.bot.send_message(
+            chat_id=ADMIN_GROUP_ID,
+            text=reply_header,
+            reply_to_message_id=sent_to_admin_id_obj.message_id,
+            parse_mode=ParseMode.MARKDOWN
+        )
 
-        if 'admin_thread_message_ids' not in replies_data[question_id]: replies_data[question_id]['admin_thread_message_ids'] = []
-        replies_data[question_id]['admin_thread_message_ids'].append(sent_to_admin.message_id)
+        if 'admin_thread_message_ids' not in replies_data[question_id]:
+            replies_data[question_id]['admin_thread_message_ids'] = []
+        replies_data[question_id]['admin_thread_message_ids'].append(sent_to_admin_id_obj.message_id)
         save_data(replies_data, REPLIES_FILE)
+        
         await update.message.reply_text("✅ تم إرسال ردك.")
     except Exception as e:
         logger.error(f"Error forwarding user reply to admin: {e}")
@@ -496,18 +519,15 @@ async def setup_commands(application: Application) -> None:
     await application.bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
     admin_commands = [
-        BotCommand("stats", "📊 الإحصائيات"),
-        BotCommand("export", "📁 تصدير البيانات"),
-        BotCommand("import", "📥 استيراد البيانات"),
-        BotCommand("broadcast", "📡 رسالة جماعية"),
-        BotCommand("ban", "🚫 حظر"),
-        BotCommand("unban", "✅ رفع الحظر"),
+        BotCommand("stats", "📊 الإحصائيات"), BotCommand("export", "📁 تصدير البيانات"),
+        BotCommand("import", "📥 استيراد البيانات"), BotCommand("broadcast", "📡 رسالة جماعية"),
+        BotCommand("ban", "🚫 حظر"), BotCommand("unban", "✅ رفع الحظر"),
         BotCommand("banned", "📋 المحظورين")
     ]
     if ADMIN_GROUP_ID != 0:
       await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_GROUP_ID))
     
-    await application.bot.set_my_commands([], scope=None) # Clear global commands
+    await application.bot.set_my_commands([], scope=None)
     logger.info("Bot commands have been set successfully.")
 
 async def handle_admin_reply_or_broadcast(update: Update, context: CallbackContext) -> None:
@@ -533,8 +553,7 @@ def main():
     application.add_handler(CommandHandler("banned", banned_list_command))
     application.add_handler(CommandHandler("import", import_command))
     
-    # Callbacks
-    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(orders_list|instructions|main_menu)$"))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(orders_list|instructions|main_menu)"))
     application.add_handler(CallbackQueryHandler(how_to_reply_callback, pattern="^how_to_reply$"))
     
     # Message Handlers
