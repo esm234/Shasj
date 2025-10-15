@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: telegram-question-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_GROUP_ID
+        sync: false
+    healthCheckPath: /ping
+    autoDeploy: true
+    runtime: python-3.11
