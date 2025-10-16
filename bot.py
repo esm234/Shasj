@@ -6,8 +6,16 @@ import logging
 import uuid
 import asyncio
 import math
+import json
+import threading
 from typing import Dict, List
+from datetime import datetime
+
+# --- Web Server Imports ---
+from flask import Flask, jsonify
 from dotenv import load_dotenv
+
+# --- Telegram Bot Imports ---
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
 from telegram.ext import (
     Application,
@@ -18,38 +26,69 @@ from telegram.ext import (
     filters,
 )
 from telegram.constants import ParseMode
-import json
-from datetime import datetime
 
-# Enable logging
+# --- إعدادات اللوجر ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# Load environment variables
+# --- تحميل متغيرات البيئة ---
 load_dotenv()
 
-# Bot configuration
+# --- إعدادات البوت ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
 
-# Data storage files
+# --- ملفات تخزين البيانات ---
 DATA_FILE = 'questions_data.json'
 REPLIES_FILE = 'replies_data.json'
 USERS_FILE = "users_data.json"
 BANS_FILE = "banned_users.json"
 
-# In-memory storage for question tracking
+# --- متغيرات التخزين في الذاكرة ---
 questions_data: Dict[str, dict] = {}
 replies_data: Dict[str, dict] = {}
 waiting_for_broadcast: Dict[int, bool] = {}
 banned_users: Dict[str, dict] = {}
-
-# User tracking
 active_users: Dict[int, dict] = {}
 
-# Load data from files
+
+# --- جزء خادم الويب (Flask) ---
+
+def create_web_server():
+    """إنشاء خادم ويب Flask لعرض الحالة والمراقبة."""
+    app = Flask(__name__)
+
+    @app.route('/')
+    def home():
+        """الصفحة الرئيسية لعرض حالة البوت."""
+        return jsonify({
+            "status": "Hadfak Bot is running",
+            "bot_name": "بوت هدفك",
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    @app.route('/ping')
+    def ping():
+        """نقطة نهاية للمراقبة (Health Check)."""
+        logger.info("Health check ping received.")
+        return jsonify({"status": "ok", "message": "pong"})
+
+    return app
+
+def run_web_server():
+    """تشغيل خادم الويب في thread منفصل."""
+    app = create_web_server()
+    port = int(os.environ.get('PORT', 8080))
+    # استخدام '0.0.0.0' ضروري لمنصات الاستضافة مثل Render
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    logger.info(f"Web server started on port {port}")
+
+
+# --- دوال مساعدة للبوت ---
+
 def load_data(filename: str) -> Dict:
     try:
         if os.path.exists(filename):
@@ -60,7 +99,6 @@ def load_data(filename: str) -> Dict:
         logger.error(f"Failed to load {filename}: {e}")
         return {}
 
-# Save data to files
 def save_data(data: Dict, filename: str):
     try:
         with open(filename, 'w', encoding='utf-8') as f:
@@ -68,7 +106,6 @@ def save_data(data: Dict, filename: str):
     except Exception as e:
         logger.error(f"Failed to save {filename}: {e}")
 
-# Load existing users data if available
 def load_users_data():
     try:
         if os.path.exists(USERS_FILE):
@@ -79,7 +116,6 @@ def load_users_data():
         logger.error(f"Failed to load users data: {e}")
         return {}
 
-# Save users data to file
 def save_users_data():
     try:
         with open(USERS_FILE, 'w', encoding='utf-8') as file:
@@ -87,19 +123,19 @@ def save_users_data():
     except Exception as e:
         logger.error(f"Failed to save users data: {e}")
 
-# HELPER FUNCTION to escape markdown characters
 def escape_legacy_markdown(text: str) -> str:
-    """Escapes characters for Telegram's legacy Markdown."""
     escape_chars = r'_*`['
     return ''.join(['\\' + char if char in escape_chars else char for char in text])
 
-# Initialize data from files on startup
+# --- تهيئة البيانات عند بدء التشغيل ---
 questions_data = load_data(DATA_FILE)
 replies_data = load_data(REPLIES_FILE)
 banned_users = load_data(BANS_FILE)
 active_users = load_users_data()
 
-# Helper functions for question management
+# --- بقية دوال البوت هنا (بدون تغيير) ---
+# get_user_questions, get_all_user_ids, is_user_banned, etc.
+# ... (All your other bot functions like start_command, button_handler, etc., go here unchanged)
 def get_user_questions(user_id: int) -> List[Dict]:
     user_q = [q for q in questions_data.values() if q['user_id'] == user_id]
     return sorted(user_q, key=lambda x: x['timestamp'], reverse=True)
@@ -539,10 +575,30 @@ async def handle_admin_reply_or_broadcast(update: Update, context: CallbackConte
     elif update.message and update.message.reply_to_message:
         await handle_admin_reply(update, context)
 
-def main():
+
+# --- الدالة الرئيسية الجديدة ---
+
+async def main() -> None:
+    """الدالة الرئيسية لإعداد وتشغيل البوت وخادم الويب."""
+    
+    # --- 1. التحقق من متغيرات البيئة ---
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is not set!")
+        return
+    if not ADMIN_GROUP_ID or ADMIN_GROUP_ID == 0:
+        logger.error("ADMIN_GROUP_ID environment variable is not set or invalid!")
+        return
+
+    # --- 2. تشغيل خادم الويب في الخلفية ---
+    # Daemon=True يجعل الـ thread يتوقف عند إغلاق البرنامج الرئيسي
+    web_server_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_server_thread.start()
+    logger.info("Web server thread started.")
+
+    # --- 3. إعداد وتشغيل بوت التليجرام ---
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
+    # إضافة الأوامر (Handlers)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stats", stats_command))
@@ -553,23 +609,32 @@ def main():
     application.add_handler(CommandHandler("banned", banned_list_command))
     application.add_handler(CommandHandler("import", import_command))
     
+    # معالجات الأزرار
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(orders_list|instructions|main_menu)"))
     application.add_handler(CallbackQueryHandler(how_to_reply_callback, pattern="^how_to_reply$"))
     
-    # Message Handlers
+    # معالجات الرسائل
     all_media_filters = (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.VIDEO | filters.Sticker.ALL)
     
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND & all_media_filters, handle_user_message))
     application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & all_media_filters, handle_admin_reply_or_broadcast))
 
+    # دالة ما بعد التهيئة
     application.post_init = setup_commands
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    logger.info("Bot application configured. Starting polling...")
+
+    # --- 4. تشغيل البوت بطريقة Async ---
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+    # حلقة لا نهائية لإبقاء البرنامج يعمل
+    while True:
+        await asyncio.sleep(3600) # ينام لمدة ساعة ثم يتحقق مجدداً
+
 
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN environment variable is not set!")
-        exit(1)
-    if not ADMIN_GROUP_ID or ADMIN_GROUP_ID == 0:
-        logger.error("ADMIN_GROUP_ID environment variable is not set or invalid!")
-        exit(1)
-    main()
+    logger.info("Starting bot application...")
+    asyncio.run(main())
+
