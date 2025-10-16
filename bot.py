@@ -294,7 +294,6 @@ async def forward_to_admin_topic(context: CallbackContext, q_data: Dict, topic_i
     safe_username = escape_legacy_markdown(q_data['username']) if q_data['username'] else "غير متوفر"
     
     caption = (f"**استفسار جديد - بنك رقم {q_data['bank_number']}** 📥\n"
-               f"**التوجيه إلى Topic ID:** `{topic_id}`\n"
                f"**من:** {safe_fullname}\n"
                f"**يوزر:** @{safe_username}\n"
                f"**ID المستخدم:** `{q_data['user_id']}`\n\n"
