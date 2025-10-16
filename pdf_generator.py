@@ -1,4 +1,5 @@
 import os
+import html # <-- استدعاء مكتبة جديدة (مدمجة مع بايثون)
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
@@ -7,7 +8,6 @@ from reportlab.lib.enums import TA_RIGHT
 from datetime import datetime
 from reportlab.lib.pagesizes import A4
 
-# --- المكتبات الجديدة لدعم العربية ---
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -25,7 +25,7 @@ def register_arabic_font():
 
 def create_questions_pdf(questions_data: dict, file_path: str) -> str:
     """
-    ينشئ ملف PDF من بيانات الأسئلة، مع دعم كامل للعربية.
+    ينشئ ملف PDF من بيانات الأسئلة، مع دعم كامل للعربية ومعالجة آمنة للنصوص.
     """
     register_arabic_font()
     
@@ -33,22 +33,17 @@ def create_questions_pdf(questions_data: dict, file_path: str) -> str:
     story = []
     
     styles = getSampleStyleSheet()
-    # تعديل الستايلات لتستخدم الخط العربي بشكل أساسي
     title_style = ParagraphStyle('ArabicTitle', parent=styles['h1'], fontName=ARABIC_FONT_NAME, fontSize=20, alignment=TA_RIGHT, spaceAfter=20)
     meta_style = ParagraphStyle('MetaStyle', parent=styles['Normal'], fontName=ARABIC_FONT_NAME, fontSize=10, alignment=TA_RIGHT)
     question_style = ParagraphStyle('QuestionStyle', parent=styles['Normal'], fontName=ARABIC_FONT_NAME, fontSize=14, alignment=TA_RIGHT, spaceBefore=10, spaceAfter=10, leading=20)
     option_style = ParagraphStyle('OptionStyle', parent=styles['Normal'], fontName=ARABIC_FONT_NAME, fontSize=12, alignment=TA_RIGHT, leftIndent=20)
 
-    # --- معالجة النصوص قبل إضافتها ---
     def format_arabic_text(text):
         if not text: return ""
-        # 1. تشكيل الحروف
         reshaped_text = arabic_reshaper.reshape(text)
-        # 2. ترتيب النص من اليمين لليسار
         bidi_text = get_display(reshaped_text)
         return bidi_text
 
-    # --- بناء محتوى الـ PDF ---
     story.append(Paragraph(format_arabic_text("تجميع أسئلة القدرات - بوت هدفك"), title_style))
     story.append(Paragraph(format_arabic_text(f"تاريخ التجميع: {datetime.now().strftime('%Y-%m-%d %H:%M')}"), meta_style))
     story.append(Spacer(1, 30))
@@ -56,22 +51,27 @@ def create_questions_pdf(questions_data: dict, file_path: str) -> str:
     sorted_questions = sorted(questions_data.values(), key=lambda x: x['timestamp'])
 
     for i, q in enumerate(sorted_questions, 1):
-        question_text = q.get('question_text', q.get('raw_content'))
-        if not question_text:
-            question_text = "(مشاركة وسائط بدون نص)"
-
-        # إضافة السؤال بعد معالجته
-        story.append(Paragraph(format_arabic_text(f"<b>{i}. السؤال:</b>"), question_style))
-        story.append(Paragraph(format_arabic_text(question_text.replace('\n', '<br/>')), question_style))
+        # --- بداية التعديل المهم ---
+        # 1. احصل على النص الخام من المستخدم
+        raw_question_text = q.get('question_text') or q.get('raw_content') or "(مشاركة وسائط بدون نص)"
         
-        # إضافة الخيارات بعد معالجتها
+        # 2. قم بتهريب (escape) النص الخام لتحويل الرموز الخاصة إلى نص آمن
+        safe_question_text = html.escape(raw_question_text)
+        
+        # 3. الآن يمكنك إضافة وسوم HTML الخاصة بك بأمان
+        final_paragraph_text = f"<b>{i}. السؤال:</b><br/>{safe_question_text.replace(chr(10), '<br/>')}"
+        # --- نهاية التعديل المهم ---
+
+        story.append(Paragraph(format_arabic_text(final_paragraph_text), question_style))
+        
         if q.get('options'):
             story.append(Spacer(1, 10))
-            # استخدام حروف عربية للترقيم
             option_letters = ['أ', 'ب', 'ج', 'د', 'هـ', 'و', 'ز', 'ح']
             for j, opt in enumerate(q['options']):
+                # قم بتهريب الخيارات أيضًا
+                safe_opt = html.escape(opt)
                 letter = option_letters[j] if j < len(option_letters) else ''
-                story.append(Paragraph(format_arabic_text(f"{letter}) {opt}"), option_style))
+                story.append(Paragraph(format_arabic_text(f"{letter}) {safe_opt}"), option_style))
 
         story.append(Spacer(1, 25))
 
