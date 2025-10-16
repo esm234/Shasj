@@ -380,7 +380,6 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
 
 # --- ADMIN COMMANDS ---
 
-### MODIFIED ###
 async def export_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_user or update.effective_user.id != ADMIN_USER_ID: return
 
@@ -395,7 +394,6 @@ async def export_command(update: Update, context: CallbackContext) -> None:
     except Exception as e: 
         await update.message.reply_text(f"❌ حدث خطأ أثناء التصدير: {e}")
 
-### MODIFIED ###
 async def import_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_user or update.effective_user.id != ADMIN_USER_ID: return
 
@@ -405,12 +403,9 @@ async def import_command(update: Update, context: CallbackContext) -> None:
     doc = update.message.reply_to_message.document
     file_name = doc.file_name.lower()
     
-    # Determine which data to update
     data_map = {
-        "questions": (questions_data, DATA_FILE),
-        "replies": (replies_data, REPLIES_FILE),
-        "users": (active_users, USERS_FILE),
-        "banned": (banned_users, BANS_FILE),
+        "questions": (questions_data, DATA_FILE), "replies": (replies_data, REPLIES_FILE),
+        "users": (active_users, USERS_FILE), "banned": (banned_users, BANS_FILE),
     }
     
     target_key = None
@@ -423,23 +418,17 @@ async def import_command(update: Update, context: CallbackContext) -> None:
         return await update.message.reply_text("❌ لم يتم التعرف على الملف. يجب أن يحتوي اسم الملف على `questions`, `replies`, `users`, or `banned`.")
 
     try:
-        # Step 1: Load the backup data from the sent file
         file_bytes = await (await doc.get_file()).download_as_bytearray()
         backup_data = json.loads(file_bytes.decode('utf-8'))
-
-        # Step 2: Get a reference to the current in-memory data
         current_data, target_file = data_map[target_key]
         
-        # Step 3: Merge the backup data into the current data
         merged_count = 0
         for key, value in backup_data.items():
             if key not in current_data:
                 current_data[key] = value
                 merged_count += 1
         
-        # Step 4: Save the newly merged data to the file
         save_data(current_data, target_file)
-        
         await update.message.reply_text(
             f"✅ تمت عملية الدمج بنجاح لملف `{target_file}`.\n"
             f"📈 تم إضافة `{merged_count}` سجل جديد من النسخة الاحتياطية."
@@ -459,27 +448,20 @@ def _get_user_id_from_thread(replied_msg_id: int) -> int or None:
 
 async def ban_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
-    
     user_id_to_ban, reason = None, "بدون سبب"
 
     if update.message.reply_to_message:
-        replied_msg_id = update.message.reply_to_message.message_id
-        user_id_to_ban = _get_user_id_from_thread(replied_msg_id)
+        user_id_to_ban = _get_user_id_from_thread(update.message.reply_to_message.message_id)
         reason = " ".join(context.args) if context.args else "بدون سبب"
     else:
-        if not context.args:
-            return await update.message.reply_text("الصيغة: /ban <user_id> [السبب]\nأو قم بالرد على رسالة المستخدم بالأمر /ban")
+        if not context.args: return await update.message.reply_text("الصيغة: /ban <user_id> [السبب]\nأو قم بالرد على رسالة المستخدم بالأمر /ban")
         try:
             user_id_to_ban = int(context.args[0])
             reason = " ".join(context.args[1:]) or "بدون سبب"
-        except (ValueError, IndexError):
-            return await update.message.reply_text("معرف المستخدم غير صحيح.")
+        except (ValueError, IndexError): return await update.message.reply_text("معرف المستخدم غير صحيح.")
 
-    if not user_id_to_ban:
-        return await update.message.reply_text("لم يتم العثور على ID المستخدم. تأكد من الرد على رسالة داخل محادثة.")
-
-    if is_user_banned(user_id_to_ban):
-        return await update.message.reply_text(f"المستخدم {user_id_to_ban} محظور بالفعل.")
+    if not user_id_to_ban: return await update.message.reply_text("لم يتم العثور على ID المستخدم.")
+    if is_user_banned(user_id_to_ban): return await update.message.reply_text(f"المستخدم {user_id_to_ban} محظور بالفعل.")
         
     banned_users[str(user_id_to_ban)] = {'banned_at': datetime.now().isoformat(), 'banned_by': update.effective_user.id, 'reason': reason}
     save_data(banned_users, BANS_FILE)
@@ -490,24 +472,16 @@ async def unban_command(update: Update, context: CallbackContext) -> None:
     user_id_to_unban = None
 
     if update.message.reply_to_message:
-        replied_msg_id = update.message.reply_to_message.message_id
-        user_id_to_unban = _get_user_id_from_thread(replied_msg_id)
+        user_id_to_unban = _get_user_id_from_thread(update.message.reply_to_message.message_id)
     else:
-        if not context.args:
-            return await update.message.reply_text("الصيغة: /unban <user_id>\nأو قم بالرد على رسالة المستخدم بالأمر /unban")
-        try:
-            user_id_to_unban = int(context.args[0])
-        except (ValueError, IndexError):
-            return await update.message.reply_text("معرف المستخدم غير صحيح.")
+        if not context.args: return await update.message.reply_text("الصيغة: /unban <user_id>\nأو قم بالرد على رسالة المستخدم بالأمر /unban")
+        try: user_id_to_unban = int(context.args[0])
+        except (ValueError, IndexError): return await update.message.reply_text("معرف المستخدم غير صحيح.")
 
-    if not user_id_to_unban:
-        return await update.message.reply_text("لم يتم العثور على ID المستخدم. تأكد من الرد على رسالة داخل محادثة.")
-
-    if not is_user_banned(user_id_to_unban):
-        return await update.message.reply_text(f"المستخدم {user_id_to_unban} ليس محظوراً.")
+    if not user_id_to_unban: return await update.message.reply_text("لم يتم العثور على ID المستخدم.")
+    if not is_user_banned(user_id_to_unban): return await update.message.reply_text(f"المستخدم {user_id_to_unban} ليس محظوراً.")
         
-    if str(user_id_to_unban) in banned_users:
-        del banned_users[str(user_id_to_unban)]
+    if str(user_id_to_unban) in banned_users: del banned_users[str(user_id_to_unban)]
     save_data(banned_users, BANS_FILE)
     await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم `{user_id_to_unban}`.", parse_mode=ParseMode.MARKDOWN)
     
@@ -562,6 +536,42 @@ async def banned_list_command(update: Update, context: CallbackContext) -> None:
     message = f"**🚫 قائمة المحظورين ({len(banned_users)}):**\n\n" + "\n".join([f"- ID: `{uid}` | السبب: {data['reason']}" for uid, data in banned_users.items()])
     await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
+async def periodic_export_callback(context: CallbackContext):
+    logger.info("Running scheduled export job...")
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    try:
+        await context.bot.send_message(chat_id=ADMIN_USER_ID, text="🤖 بدء عملية التصدير التلقائية...")
+        files_to_export = {
+            DATA_FILE: "questions", REPLIES_FILE: "replies", 
+            USERS_FILE: "users", BANS_FILE: "banned"
+        }
+
+        for file_path, name in files_to_export.items():
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    await context.bot.send_document(
+                        chat_id=ADMIN_USER_ID, document=f, 
+                        filename=f"{name}_{timestamp}.json"
+                    )
+        
+        await context.bot.send_message(
+            chat_id=ADMIN_USER_ID, 
+            text="✅ **اكتمل تصدير البيانات التلقائي بنجاح**", 
+            parse_mode=ParseMode.MARKDOWN
+        )
+        logger.info("Scheduled export job completed successfully.")
+    
+    except Exception as e:
+        logger.error(f"Scheduled export job failed: {e}")
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_USER_ID, 
+                text=f"❌ حدث خطأ أثناء التصدير التلقائي: {e}"
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to notify admin about the export job error: {notify_error}")
+
 async def handle_admin_messages(update: Update, context: CallbackContext) -> None:
     if not update.message or not update.effective_user: return
     if update.message.reply_to_message:
@@ -578,6 +588,15 @@ def run_web_server():
 
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
+    
+    job_queue = application.job_queue
+    if job_queue:
+        # The job will run every 5 minutes (300 seconds)
+        job_queue.run_repeating(
+            callback=periodic_export_callback, 
+            interval=300,
+            first=10
+        )
     
     commands = {"start": start_command, "help": help_command, "stats": stats_command, "export": export_command, 
                 "import": import_command, "broadcast": broadcast_command, "ban": ban_command, 
