@@ -47,7 +47,7 @@ TOPIC_IDS = {
 # Data storage files
 DATA_FILE = 'questions_data.json'
 REPLIES_FILE = 'replies_data.json'
-USERS_FILE = "users_data.json'
+USERS_FILE = "users_data.json"
 BANS_FILE = "banned_users.json"
 
 # In-memory storage
