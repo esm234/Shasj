@@ -373,7 +373,6 @@ async def help_command(update: Update, context: CallbackContext) -> None:
     help_text = ("**🛠️ قائمة أوامر المشرفين:**\n\n/stats - عرض الإحصائيات\n/export - استخراج البيانات\n/import - استيراد البيانات\n/broadcast - إرسال رسالة جماعية\n/ban `user_id` `[reason]`\n/unban `user_id`\n/banned - قائمة المحظورين") if is_admin else ("**👋 مرحباً بك في قسم المساعدة!**\n\n/start - بدء/عودة للقائمة الرئيسية\n/help - عرض هذه الرسالة")
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
-# ===== الدوال الجديدة والمعدلة هنا =====
 async def ban_command(update: Update, context: CallbackContext) -> None:
     if not update.message or not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user:
         return
@@ -417,11 +416,11 @@ async def ban_command(update: Update, context: CallbackContext) -> None:
         return
 
     # تنفيذ الحظر
-    if is_user_banned(user_id_to_ban):
+    if user_id_to_ban and is_user_banned(user_id_to_ban):
         await update.message.reply_text(f"المستخدم `{user_id_to_ban}` محظور بالفعل.", parse_mode=ParseMode.MARKDOWN)
         return
         
-    if ban_user(user_id_to_ban, update.effective_user.id, reason):
+    if user_id_to_ban and ban_user(user_id_to_ban, update.effective_user.id, reason):
         await update.message.reply_text(f"🚫 تم حظر المستخدم `{user_id_to_ban}` بنجاح.\n**السبب:** {reason}", parse_mode=ParseMode.MARKDOWN)
 
 
@@ -462,14 +461,12 @@ async def unban_command(update: Update, context: CallbackContext) -> None:
         return
 
     # تنفيذ رفع الحظر
-    if not is_user_banned(user_id_to_unban):
+    if user_id_to_unban and not is_user_banned(user_id_to_unban):
         await update.message.reply_text(f"المستخدم `{user_id_to_unban}` ليس محظوراً بالأصل.", parse_mode=ParseMode.MARKDOWN)
         return
 
-    if unban_user(user_id_to_unban):
+    if user_id_to_unban and unban_user(user_id_to_unban):
         await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم `{user_id_to_unban}` بنجاح.", parse_mode=ParseMode.MARKDOWN)
-# ===== نهاية التعديل =====
-
 
 async def banned_list_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
@@ -620,18 +617,21 @@ async def handle_broadcast_message(update: Update, context: CallbackContext) -> 
     await update.message.reply_text(f"**📣 اكتمل الإرسال الجماعي:**\n👍 نجح: {successful}\n👎 فشل: {failed}", parse_mode=ParseMode.MARKDOWN)
 
 async def setup_commands(application: Application) -> None:
+    # 1. تعيين الزر الأزرق "Menu" الافتراضي ليظهر لجميع المستخدمين في المحادثة الخاصة
     try:
         await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
         logger.info("Default menu button set to show commands.")
     except Exception as e:
         logger.error(f"Failed to set the default menu button: {e}")
 
+    # 2. تعيين قائمة الأوامر التي تظهر للمستخدم العادي عند الضغط على الزر
     user_commands = [
         BotCommand("start", "🚀 بدء/عودة للقائمة"),
         BotCommand("help", "❓ مساعدة")
     ]
     await application.bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
+    # 3. تعيين قائمة أوامر الأدمن التي تظهر في جروب الأدمن فقط
     admin_commands = [
         BotCommand("stats", "📊 الإحصائيات"),
         BotCommand("export", "📁 تصدير البيانات"),
@@ -641,6 +641,7 @@ async def setup_commands(application: Application) -> None:
         BotCommand("unban", "✅ رفع الحظر"),
         BotCommand("banned", "📋 قائمة المحظورين")
     ]
+    # تأكد أن البوت مشرف في الجروب لكي يعمل هذا الجزء
     if ADMIN_GROUP_ID != 0:
       await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_GROUP_ID))
     
@@ -661,7 +662,7 @@ async def handle_admin_reply_or_broadcast(update: Update, context: CallbackConte
 
 async def main() -> None:
     """الدالة الرئيسية لإعداد وتشغيل البوت وخادم الويب."""
-
+    
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN environment variable is not set!")
         return
@@ -669,15 +670,12 @@ async def main() -> None:
         logger.error("ADMIN_GROUP_ID environment variable is not set or invalid!")
         return
 
-    # 🧩 تشغيل السيرفر الجانبي (لو خاص بلوحة التحكم أو webhook)
     web_server_thread = threading.Thread(target=run_web_server, daemon=True)
     web_server_thread.start()
     logger.info("Web server thread started.")
 
-    # 🧠 إنشاء التطبيق
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # 🧱 أوامر البوت
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stats", stats_command))
@@ -687,33 +685,27 @@ async def main() -> None:
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("banned", banned_list_command))
     application.add_handler(CommandHandler("import", import_command))
-
-    # 🎛 أزرار التفاعل
+    
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(orders_list|instructions|main_menu)"))
     application.add_handler(CallbackQueryHandler(how_to_reply_callback, pattern="^how_to_reply$"))
+    
+    all_media_filters = (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.VIDEO | filters.Sticker.ALL)
+    
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND & all_media_filters, handle_user_message))
+    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & all_media_filters, handle_admin_reply_or_broadcast))
 
-    # 📨 استقبال كل أنواع الرسائل
-    all_media_filters = (
-        filters.TEXT
-        | filters.PHOTO
-        | filters.VOICE
-        | filters.AUDIO
-        | filters.Document.ALL
-        | filters.VIDEO
-        | filters.Sticker.ALL
-    )
-
-    application.add_handler(
-        MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND & all_media_filters, handle_user_message)
-    )
-    application.add_handler(
-        MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & all_media_filters, handle_admin_reply_or_broadcast)
-    )
-
-    # ✅ استدعاء فعلي لتسجيل الأوامر (بدل post_init)
-    await setup_commands(application)
+    application.post_init = setup_commands
 
     logger.info("Bot application configured. Starting polling...")
 
-    # ✅ تشغيل البوت بالطريقة المضمونة
-    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+    while True:
+        await asyncio.sleep(3600)
+
+
+if __name__ == "__main__":
+    logger.info("Starting bot application...")
+    asyncio.run(main())
