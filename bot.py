@@ -35,6 +35,7 @@ load_dotenv()
 # Bot configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "0"))
 
 # Load Topic IDs from .env for six banks
 TOPIC_IDS = {
@@ -215,7 +216,6 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     elif query.data == "main_menu":
         await start_command(update, context)
 
-# --- NEW: Handler for the "How to Reply" button ---
 async def how_to_reply_callback(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query: return
@@ -327,7 +327,6 @@ async def forward_to_admin_topic(context: CallbackContext, q_data: Dict, topic_i
     except Exception as e:
         logger.error(f"Error forwarding to admin group topic {topic_id}: {e}")
         
-### MODIFIED ###
 async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     admin_message = update.message
     if not admin_message or not admin_message.reply_to_message: return
@@ -346,7 +345,6 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     user_id = reply_data['user_id']
     sent_message_to_user = None
     
-    # Create the "How to Reply" button
     reply_button = InlineKeyboardButton("💡 كيفية الرد", callback_data="how_to_reply")
     reply_markup = InlineKeyboardMarkup([[reply_button]])
 
@@ -379,6 +377,75 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     except Exception as e:
         logger.error(f"Error sending reply to user: {e}")
         await admin_message.reply_text(f"❌ فشل إرسال الرد. قد يكون المستخدم قد حظر البوت.\nالخطأ: {e}")
+
+# --- ADMIN COMMANDS ---
+
+### MODIFIED ###
+async def export_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_user or update.effective_user.id != ADMIN_USER_ID: return
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    try:
+        await update.message.reply_text("جاري تجهيز الملفات للتصدير...")
+        for file_path, name in {DATA_FILE: "questions", REPLIES_FILE: "replies", USERS_FILE: "users", BANS_FILE: "banned"}.items():
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    await update.message.reply_document(document=f, filename=f"{name}_{timestamp}.json")
+        await update.message.reply_text("✅ **اكتمل تصدير البيانات بنجاح**", parse_mode=ParseMode.MARKDOWN)
+    except Exception as e: 
+        await update.message.reply_text(f"❌ حدث خطأ أثناء التصدير: {e}")
+
+### MODIFIED ###
+async def import_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_user or update.effective_user.id != ADMIN_USER_ID: return
+
+    if not update.message.reply_to_message or not update.message.reply_to_message.document:
+        return await update.message.reply_text("⚠️ لاستخدام هذا الأمر، أرسل ملف JSON ثم قم بالرد عليه بالأمر `/import`.")
+    
+    doc = update.message.reply_to_message.document
+    file_name = doc.file_name.lower()
+    
+    # Determine which data to update
+    data_map = {
+        "questions": (questions_data, DATA_FILE),
+        "replies": (replies_data, REPLIES_FILE),
+        "users": (active_users, USERS_FILE),
+        "banned": (banned_users, BANS_FILE),
+    }
+    
+    target_key = None
+    for key in data_map:
+        if key in file_name:
+            target_key = key
+            break
+
+    if not target_key:
+        return await update.message.reply_text("❌ لم يتم التعرف على الملف. يجب أن يحتوي اسم الملف على `questions`, `replies`, `users`, or `banned`.")
+
+    try:
+        # Step 1: Load the backup data from the sent file
+        file_bytes = await (await doc.get_file()).download_as_bytearray()
+        backup_data = json.loads(file_bytes.decode('utf-8'))
+
+        # Step 2: Get a reference to the current in-memory data
+        current_data, target_file = data_map[target_key]
+        
+        # Step 3: Merge the backup data into the current data
+        merged_count = 0
+        for key, value in backup_data.items():
+            if key not in current_data:
+                current_data[key] = value
+                merged_count += 1
+        
+        # Step 4: Save the newly merged data to the file
+        save_data(current_data, target_file)
+        
+        await update.message.reply_text(
+            f"✅ تمت عملية الدمج بنجاح لملف `{target_file}`.\n"
+            f"📈 تم إضافة `{merged_count}` سجل جديد من النسخة الاحتياطية."
+        )
+    except Exception as e: 
+        await update.message.reply_text(f"❌ حدث خطأ أثناء عملية الدمج: {e}")
 
 def _get_user_id_from_thread(replied_msg_id: int) -> int or None:
     question_id = None
@@ -453,37 +520,6 @@ async def stats_command(update: Update, context: CallbackContext) -> None:
                   f"🏦 **الاستفسارات حسب البنك:**\n" + "\n".join([f"• بنك {b}: {c}" for b, c in bank_counts.items()]))
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
 
-async def export_command(update: Update, context: CallbackContext) -> None:
-    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    try:
-        for file_path, name in {DATA_FILE: "questions", REPLIES_FILE: "replies", USERS_FILE: "users", BANS_FILE: "banned"}.items():
-            if os.path.exists(file_path):
-                with open(file_path, 'rb') as f:
-                    await update.message.reply_document(document=f, filename=f"{name}_{timestamp}.json")
-        await update.message.reply_text("✅ **اكتمل تصدير البيانات بنجاح**", parse_mode=ParseMode.MARKDOWN)
-    except Exception as e: await update.message.reply_text(f"❌ حدث خطأ أثناء التصدير: {e}")
-
-async def import_command(update: Update, context: CallbackContext) -> None:
-    global questions_data, replies_data, active_users, banned_users
-    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
-    if not update.message.reply_to_message or not update.message.reply_to_message.document:
-        return await update.message.reply_text("⚠️ لاستخدام هذا الأمر، أرسل ملف JSON ثم قم بالرد عليه بالأمر `/import`.")
-    doc = update.message.reply_to_message.document; file_name = doc.file_name.lower()
-    target_file = None
-    if "questions" in file_name: target_file = DATA_FILE
-    elif "replies" in file_name: target_file = REPLIES_FILE
-    elif "users" in file_name: target_file = USERS_FILE
-    elif "banned" in file_name: target_file = BANS_FILE
-    else: return await update.message.reply_text("❌ لم يتم التعرف على الملف.")
-    try:
-        file_bytes = await (await doc.get_file()).download_as_bytearray()
-        json.loads(file_bytes.decode('utf-8'))
-        with open(target_file, 'wb') as f: f.write(file_bytes)
-        questions_data, replies_data, active_users, banned_users = load_data(DATA_FILE), load_data(REPLIES_FILE), load_users_data(), load_data(BANS_FILE)
-        await update.message.reply_text(f"✅ تم استيراد وتحديث `{target_file}` بنجاح.")
-    except Exception as e: await update.message.reply_text(f"❌ حدث خطأ: {e}")
-
 async def broadcast_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
     user_count = len(get_all_user_ids())
@@ -508,8 +544,16 @@ async def handle_broadcast_message(update: Update, context: CallbackContext) -> 
         waiting_for_broadcast[admin_id] = False
 
 async def help_command(update: Update, context: CallbackContext) -> None:
-    is_admin = update.effective_chat and update.effective_chat.id == ADMIN_GROUP_ID
-    help_text = ("**🛠️ أوامر المشرفين:**\n/stats\n/export\n/import\n/broadcast\n/ban `id` `[reason]`\n/unban `id`\n/banned") if is_admin else ("**👋 للمساعدة:**\n/start - بدء/عودة للقائمة الرئيسية")
+    is_admin_group = update.effective_chat and update.effective_chat.id == ADMIN_GROUP_ID
+    is_main_admin = update.effective_user and update.effective_user.id == ADMIN_USER_ID
+
+    if is_admin_group:
+        help_text = "**🛠️ أوامر المشرفين:**\n/stats\n/broadcast\n/ban (بالرد)\n/unban (بالرد)\n/banned"
+    elif is_main_admin:
+        help_text = "**👑 أوامر الأدمن الرئيسي (خاص):**\n/export - لتصدير البيانات\n/import - لاستيراد ودمج البيانات"
+    else:
+        help_text = "**👋 للمساعدة:**\n/start - بدء/عودة للقائمة الرئيسية"
+        
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 async def banned_list_command(update: Update, context: CallbackContext) -> None:
@@ -540,9 +584,7 @@ def main():
                 "unban": unban_command, "banned": banned_list_command}
     for cmd, func in commands.items(): application.add_handler(CommandHandler(cmd, func))
 
-    # Add the new callback handler for the reply button
     application.add_handler(CallbackQueryHandler(how_to_reply_callback, pattern="^how_to_reply$"))
-    
     application.add_handler(CallbackQueryHandler(select_bank_handler, pattern="^select_bank:"))
     application.add_handler(CallbackQueryHandler(caption_help_handler, pattern="^caption_help$"))
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(instructions|main_menu)"))
@@ -558,8 +600,8 @@ def main():
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    if not BOT_TOKEN or not ADMIN_GROUP_ID:
-        logger.error("BOT_TOKEN or ADMIN_GROUP_ID environment variables are not set!")
+    if not all([BOT_TOKEN, ADMIN_GROUP_ID, ADMIN_USER_ID]):
+        logger.error("One or more environment variables (BOT_TOKEN, ADMIN_GROUP_ID, ADMIN_USER_ID) are not set!")
         exit(1)
     
     threading.Thread(target=run_web_server, daemon=True).start()
