@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
-import re # <-- Import regex module
+import re 
 import logging
 import uuid
 import asyncio
@@ -58,6 +58,7 @@ banned_users: Dict[str, dict] = {}
 active_users: Dict[int, dict] = {}
 
 # --- DATA HANDLING FUNCTIONS ---
+# ... (All data handling functions are unchanged) ...
 def load_data(filename: str) -> Dict:
     try:
         if os.path.exists(filename):
@@ -74,7 +75,7 @@ def save_data(data: Dict, filename: str):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Failed to save {filename}: {e}")
-# (Other data functions are unchanged)
+
 def load_users_data():
     try:
         if os.path.exists(USERS_FILE):
@@ -95,6 +96,7 @@ def save_users_data():
 def escape_legacy_markdown(text: str) -> str:
     escape_chars = r'_*`['
     return ''.join(['\\' + char if char in escape_chars else char for char in text])
+
 # Initialize data from files on startup
 questions_data = load_data(DATA_FILE)
 replies_data = load_data(REPLIES_FILE)
@@ -107,8 +109,9 @@ def get_all_user_ids() -> List[int]:
     question_user_ids = set(q['user_id'] for q in questions_data.values())
     active_user_ids = set(int(uid) for uid in active_users.keys())
     return list(question_user_ids.union(active_user_ids))
-# --- USER-FACING COMMANDS AND HANDLERS (Unchanged) ---
-# All user-facing functions like start_command, select_bank_handler, etc. are the same
+
+# --- USER-FACING COMMANDS (Unchanged) ---
+# ... (start_command, select_bank_handler, etc. are unchanged) ...
 async def start_command(update: Update, context: CallbackContext) -> None:
     user = update.effective_user
     if not user: return
@@ -204,8 +207,9 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     elif query.data == "main_menu":
         await start_command(update, context)
 
-# --- CORE MESSAGE HANDLING LOGIC (Unchanged)---
-# handle_user_reply, handle_photo_question, handle_text_message, forward_to_admin_topic are unchanged
+
+# --- CORE MESSAGE HANDLING (Unchanged) ---
+# ... (handle_user_reply, handle_photo_question, handle_text_message are unchanged) ...
 async def handle_user_reply(update: Update, context: CallbackContext) -> None:
     if not update.message or not update.message.reply_to_message or not update.effective_user: return
     if is_user_banned(update.effective_user.id): return
@@ -282,6 +286,9 @@ async def handle_text_message(update: Update, context: CallbackContext) -> None:
     else:
         await message.reply_text("لبدء إرسال استفسار، يرجى الضغط على /start واختيار البنك أولاً.")
 
+
+# --- FORWARDING AND ADMIN REPLIES (Unchanged) ---
+# ... (forward_to_admin_topic and handle_admin_reply are unchanged from previous version) ...
 async def forward_to_admin_topic(context: CallbackContext, q_data: Dict, topic_id: int or None):
     safe_fullname = escape_legacy_markdown(q_data['fullname'])
     safe_username = escape_legacy_markdown(q_data['username']) if q_data['username'] else "غير متوفر"
@@ -306,10 +313,6 @@ async def forward_to_admin_topic(context: CallbackContext, q_data: Dict, topic_i
     except Exception as e:
         logger.error(f"Error forwarding to admin group topic {topic_id}: {e}")
         
-# --- FORWARDING AND ADMIN REPLIES ---
-
-### MODIFIED ###
-# This function is completely rewritten to send native messages instead of copying them.
 async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     admin_message = update.message
     if not admin_message or not admin_message.reply_to_message: return
@@ -347,7 +350,6 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
         if not sent_message_to_user:
             raise ValueError("Failed to send message to user.")
 
-        # --- The rest of the logic remains the same ---
         if 'admin_thread_ids' not in reply_data: reply_data['admin_thread_ids'] = []
         if 'message_map' not in reply_data: reply_data['message_map'] = {}
         
@@ -361,9 +363,86 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
         logger.error(f"Error sending reply to user: {e}")
         await admin_message.reply_text(f"❌ فشل إرسال الرد. قد يكون المستخدم قد حظر البوت.\nالخطأ: {e}")
 
-# --- ALL ADMIN COMMANDS ---
+### NEW HELPER FUNCTION for Ban/Unban ###
+def _get_user_id_from_thread(replied_msg_id: int) -> int or None:
+    """Finds the original user ID by looking up the conversation thread."""
+    question_id = None
+    # Find the conversation this message belongs to
+    for qid, data in replies_data.items():
+        if data.get('admin_message_id') == replied_msg_id or replied_msg_id in data.get('admin_thread_ids', []):
+            question_id = qid
+            break
+            
+    # If a conversation is found, get the user ID from the original question data
+    if question_id and question_id in questions_data:
+        return questions_data[question_id].get('user_id')
+        
+    return None
+
+### MODIFIED ###
+async def ban_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
+    
+    user_id_to_ban = None
+    reason = "بدون سبب"
+
+    # Handle banning by reply (New, robust method)
+    if update.message.reply_to_message:
+        replied_msg_id = update.message.reply_to_message.message_id
+        user_id_to_ban = _get_user_id_from_thread(replied_msg_id)
+        reason = " ".join(context.args) if context.args else "بدون سبب"
+    # Fallback to old method: /ban <id> [reason]
+    else:
+        if not context.args:
+            return await update.message.reply_text("الصيغة: /ban <user_id> [السبب]\nأو قم بالرد على رسالة المستخدم بالأمر /ban")
+        try:
+            user_id_to_ban = int(context.args[0])
+            reason = " ".join(context.args[1:]) or "بدون سبب"
+        except (ValueError, IndexError):
+            return await update.message.reply_text("معرف المستخدم غير صحيح.")
+
+    if not user_id_to_ban:
+        return await update.message.reply_text("لم يتم العثور على ID المستخدم. تأكد من الرد على رسالة داخل محادثة.")
+
+    if is_user_banned(user_id_to_ban):
+        return await update.message.reply_text(f"المستخدم {user_id_to_ban} محظور بالفعل.")
+        
+    banned_users[str(user_id_to_ban)] = {'banned_at': datetime.now().isoformat(), 'banned_by': update.effective_user.id, 'reason': reason}
+    save_data(banned_users, BANS_FILE)
+    await update.message.reply_text(f"🚫 تم حظر المستخدم `{user_id_to_ban}`.\nالسبب: {reason}", parse_mode=ParseMode.MARKDOWN)
+
+### MODIFIED ###
+async def unban_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
+
+    user_id_to_unban = None
+
+    # Handle unbanning by reply (New, robust method)
+    if update.message.reply_to_message:
+        replied_msg_id = update.message.reply_to_message.message_id
+        user_id_to_unban = _get_user_id_from_thread(replied_msg_id)
+    # Fallback to old method: /unban <id>
+    else:
+        if not context.args:
+            return await update.message.reply_text("الصيغة: /unban <user_id>\nأو قم بالرد على رسالة المستخدم بالأمر /unban")
+        try:
+            user_id_to_unban = int(context.args[0])
+        except (ValueError, IndexError):
+            return await update.message.reply_text("معرف المستخدم غير صحيح.")
+
+    if not user_id_to_unban:
+        return await update.message.reply_text("لم يتم العثور على ID المستخدم. تأكد من الرد على رسالة داخل محادثة.")
+
+    if not is_user_banned(user_id_to_unban):
+        return await update.message.reply_text(f"المستخدم {user_id_to_unban} ليس محظوراً.")
+        
+    if str(user_id_to_unban) in banned_users:
+        del banned_users[str(user_id_to_unban)]
+    save_data(banned_users, BANS_FILE)
+    await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم `{user_id_to_unban}`.", parse_mode=ParseMode.MARKDOWN)
+    
+# ... (stats, export, import, broadcast, help, banned_list, and admin_messages handlers are unchanged) ...
 async def stats_command(update: Update, context: CallbackContext) -> None:
-    # (Unchanged)
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
     total_questions, unique_users, bank_counts = len(questions_data), len(get_all_user_ids()), {}
     for q in questions_data.values():
@@ -372,7 +451,6 @@ async def stats_command(update: Update, context: CallbackContext) -> None:
                   f"🏦 **الاستفسارات حسب البنك:**\n" + "\n".join([f"• بنك {b}: {c}" for b, c in bank_counts.items()]))
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
 
-# (export, import, broadcast commands are unchanged)
 async def export_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -432,81 +510,7 @@ async def help_command(update: Update, context: CallbackContext) -> None:
     help_text = ("**🛠️ أوامر المشرفين:**\n/stats\n/export\n/import\n/broadcast\n/ban `id` `[reason]`\n/unban `id`\n/banned") if is_admin else ("**👋 للمساعدة:**\n/start - بدء/عودة للقائمة الرئيسية")
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
-### HELPER FUNCTION for Ban/Unban ###
-def _extract_user_id_from_reply(message: Update.message) -> int or None:
-    """Extracts user ID from the caption of a replied-to message."""
-    if not message.reply_to_message or not message.reply_to_message.caption:
-        return None
-    
-    # Use regex to find "ID المستخدم: `12345`"
-    match = re.search(r"ID المستخدم:\s*`(\d+)`", message.reply_to_message.caption)
-    if match:
-        return int(match.group(1))
-    return None
-
-### MODIFIED ###
-async def ban_command(update: Update, context: CallbackContext) -> None:
-    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
-    
-    user_id_to_ban = None
-    reason = "بدون سبب"
-
-    # -- NEW: Handle banning by reply --
-    if update.message.reply_to_message:
-        user_id_to_ban = _extract_user_id_from_reply(update.message)
-        # Reason is the text after the /ban command
-        reason = " ".join(context.args) if context.args else "بدون سبب"
-    # -- Fallback to old method: /ban <id> [reason] --
-    else:
-        if not context.args:
-            return await update.message.reply_text("الصيغة: /ban <user_id> [السبب]\nأو قم بالرد على رسالة المستخدم بالأمر /ban")
-        try:
-            user_id_to_ban = int(context.args[0])
-            reason = " ".join(context.args[1:]) or "بدون سبب"
-        except (ValueError, IndexError):
-            return await update.message.reply_text("معرف المستخدم غير صحيح.")
-
-    if not user_id_to_ban:
-        return await update.message.reply_text("لم يتم العثور على ID المستخدم. تأكد من الرد على الرسالة الصحيحة.")
-
-    if is_user_banned(user_id_to_ban):
-        return await update.message.reply_text(f"المستخدم {user_id_to_ban} محظور بالفعل.")
-        
-    banned_users[str(user_id_to_ban)] = {'banned_at': datetime.now().isoformat(), 'banned_by': update.effective_user.id, 'reason': reason}
-    save_data(banned_users, BANS_FILE)
-    await update.message.reply_text(f"🚫 تم حظر المستخدم `{user_id_to_ban}`.\nالسبب: {reason}", parse_mode=ParseMode.MARKDOWN)
-
-### MODIFIED ###
-async def unban_command(update: Update, context: CallbackContext) -> None:
-    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
-
-    user_id_to_unban = None
-
-    # -- NEW: Handle unbanning by reply --
-    if update.message.reply_to_message:
-        user_id_to_unban = _extract_user_id_from_reply(update.message)
-    # -- Fallback to old method: /unban <id> --
-    else:
-        if not context.args:
-            return await update.message.reply_text("الصيغة: /unban <user_id>\nأو قم بالرد على رسالة المستخدم بالأمر /unban")
-        try:
-            user_id_to_unban = int(context.args[0])
-        except (ValueError, IndexError):
-            return await update.message.reply_text("معرف المستخدم غير صحيح.")
-
-    if not user_id_to_unban:
-        return await update.message.reply_text("لم يتم العثور على ID المستخدم. تأكد من الرد على الرسالة الصحيحة.")
-
-    if not is_user_banned(user_id_to_unban):
-        return await update.message.reply_text(f"المستخدم {user_id_to_unban} ليس محظوراً.")
-        
-    if str(user_id_to_unban) in banned_users:
-        del banned_users[str(user_id_to_unban)]
-    save_data(banned_users, BANS_FILE)
-    await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم `{user_id_to_unban}`.", parse_mode=ParseMode.MARKDOWN)
-
 async def banned_list_command(update: Update, context: CallbackContext) -> None:
-    # (Unchanged)
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
     if not banned_users: return await update.message.reply_text("لا يوجد مستخدمون محظورون حالياً.")
     message = f"**🚫 قائمة المحظورين ({len(banned_users)}):**\n\n" + "\n".join([f"- ID: `{uid}` | السبب: {data['reason']}" for uid, data in banned_users.items()])
@@ -514,19 +518,21 @@ async def banned_list_command(update: Update, context: CallbackContext) -> None:
 
 async def handle_admin_messages(update: Update, context: CallbackContext) -> None:
     if not update.message or not update.effective_user: return
-    if update.message.reply_to_message: await handle_admin_reply(update, context)
-    elif waiting_for_broadcast.get(update.effective_user.id): await handle_broadcast_message(update, context)
+    # This logic is simplified because command handlers (like ban) will take precedence.
+    # So we only need to check for replies (for conversations) or broadcasts.
+    if update.message.reply_to_message:
+        await handle_admin_reply(update, context)
+    elif waiting_for_broadcast.get(update.effective_user.id):
+        await handle_broadcast_message(update, context)
 
-# --- WEB SERVER FOR RENDER ---
+# --- WEB SERVER & MAIN APP ---
 app = Flask(__name__)
 @app.route('/')
 def index(): return "Bot is running!"
-
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# --- MAIN APPLICATION SETUP ---
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -536,19 +542,17 @@ def main():
                 "unban": unban_command, "banned": banned_list_command}
     for cmd, func in commands.items(): application.add_handler(CommandHandler(cmd, func))
 
-    # Callback Query Handlers
+    # Callback & Message Handlers
     application.add_handler(CallbackQueryHandler(select_bank_handler, pattern="^select_bank:"))
     application.add_handler(CallbackQueryHandler(caption_help_handler, pattern="^caption_help$"))
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(instructions|main_menu)"))
     
-    # Message Handlers
     all_media_filters = (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.VIDEO | filters.Sticker.ALL)
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.REPLY & ~filters.COMMAND & all_media_filters, handle_user_reply))
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO & ~filters.COMMAND, handle_photo_question))
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text_message))
-    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & filters.REPLY, handle_admin_reply))
-    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & ~filters.REPLY, handle_broadcast_message))
-
+    
+    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND, handle_admin_messages))
 
     logger.info("Bot is starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
@@ -560,4 +564,3 @@ if __name__ == "__main__":
     
     threading.Thread(target=run_web_server, daemon=True).start()
     main()
-
