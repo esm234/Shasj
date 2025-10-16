@@ -6,16 +6,8 @@ import logging
 import uuid
 import asyncio
 import math
-import json
-import threading
 from typing import Dict, List
-from datetime import datetime
-
-# --- Web Server Imports ---
-from flask import Flask, jsonify
 from dotenv import load_dotenv
-
-# --- Telegram Bot Imports ---
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
 from telegram.ext import (
     Application,
@@ -26,69 +18,38 @@ from telegram.ext import (
     filters,
 )
 from telegram.constants import ParseMode
+import json
+from datetime import datetime
 
-# --- إعدادات اللوجر ---
+# Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# --- تحميل متغيرات البيئة ---
+# Load environment variables
 load_dotenv()
 
-# --- إعدادات البوت ---
+# Bot configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
 
-# --- ملفات تخزين البيانات ---
+# Data storage files
 DATA_FILE = 'questions_data.json'
 REPLIES_FILE = 'replies_data.json'
 USERS_FILE = "users_data.json"
 BANS_FILE = "banned_users.json"
 
-# --- متغيرات التخزين في الذاكرة ---
+# In-memory storage for question tracking
 questions_data: Dict[str, dict] = {}
 replies_data: Dict[str, dict] = {}
 waiting_for_broadcast: Dict[int, bool] = {}
 banned_users: Dict[str, dict] = {}
+
+# User tracking
 active_users: Dict[int, dict] = {}
 
-
-# --- جزء خادم الويب (Flask) ---
-
-def create_web_server():
-    """إنشاء خادم ويب Flask لعرض الحالة والمراقبة."""
-    app = Flask(__name__)
-
-    @app.route('/')
-    def home():
-        """الصفحة الرئيسية لعرض حالة البوت."""
-        return jsonify({
-            "status": "Hadfak Bot is running",
-            "bot_name": "بوت هدفك",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        })
-
-    @app.route('/ping')
-    def ping():
-        """نقطة نهاية للمراقبة (Health Check)."""
-        logger.info("Health check ping received.")
-        return jsonify({"status": "ok", "message": "pong"})
-
-    return app
-
-def run_web_server():
-    """تشغيل خادم الويب في thread منفصل."""
-    app = create_web_server()
-    port = int(os.environ.get('PORT', 8080))
-    # استخدام '0.0.0.0' ضروري لمنصات الاستضافة مثل Render
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-    logger.info(f"Web server started on port {port}")
-
-
-# --- دوال مساعدة للبوت ---
-
+# Load data from files
 def load_data(filename: str) -> Dict:
     try:
         if os.path.exists(filename):
@@ -99,6 +60,7 @@ def load_data(filename: str) -> Dict:
         logger.error(f"Failed to load {filename}: {e}")
         return {}
 
+# Save data to files
 def save_data(data: Dict, filename: str):
     try:
         with open(filename, 'w', encoding='utf-8') as f:
@@ -106,6 +68,7 @@ def save_data(data: Dict, filename: str):
     except Exception as e:
         logger.error(f"Failed to save {filename}: {e}")
 
+# Load existing users data if available
 def load_users_data():
     try:
         if os.path.exists(USERS_FILE):
@@ -116,6 +79,7 @@ def load_users_data():
         logger.error(f"Failed to load users data: {e}")
         return {}
 
+# Save users data to file
 def save_users_data():
     try:
         with open(USERS_FILE, 'w', encoding='utf-8') as file:
@@ -123,17 +87,19 @@ def save_users_data():
     except Exception as e:
         logger.error(f"Failed to save users data: {e}")
 
+# HELPER FUNCTION to escape markdown characters
 def escape_legacy_markdown(text: str) -> str:
+    """Escapes characters for Telegram's legacy Markdown."""
     escape_chars = r'_*`['
     return ''.join(['\\' + char if char in escape_chars else char for char in text])
 
-# --- تهيئة البيانات عند بدء التشغيل ---
+# Initialize data from files on startup
 questions_data = load_data(DATA_FILE)
 replies_data = load_data(REPLIES_FILE)
 banned_users = load_data(BANS_FILE)
 active_users = load_users_data()
 
-# --- بقية دوال البوت ---
+# Helper functions for question management
 def get_user_questions(user_id: int) -> List[Dict]:
     user_q = [q for q in questions_data.values() if q['user_id'] == user_id]
     return sorted(user_q, key=lambda x: x['timestamp'], reverse=True)
@@ -171,6 +137,13 @@ def get_banned_users() -> List[Dict]:
     for user_id, ban_data in banned_users.items():
         banned_list.append({'user_id': int(user_id), **ban_data})
     return banned_list
+
+async def set_menu_button(application: Application) -> None:
+    try:
+        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands(type="commands"))
+        logger.info("Menu button set to commands")
+    except Exception as e:
+        logger.error(f"Failed to set menu button: {e}")
 
 async def start_command(update: Update, context: CallbackContext) -> None:
     user = update.effective_user
@@ -310,6 +283,7 @@ async def export_command(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text(f"❌ حدث خطأ أثناء التصدير: {e}")
 
 async def import_command(update: Update, context: CallbackContext) -> None:
+    """Handles the /import command to restore data from a JSON file by replying to the file."""
     global questions_data, replies_data, active_users, banned_users
 
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
@@ -374,99 +348,23 @@ async def help_command(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 async def ban_command(update: Update, context: CallbackContext) -> None:
-    if not update.message or not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user:
-        return
-
-    user_id_to_ban = None
-    reason = "بدون سبب"
-    replied_message = update.message.reply_to_message
-
-    # الحالة الأولى: الحظر عن طريق الرد على رسالة
-    if replied_message:
-        text_content = replied_message.text or replied_message.caption
-        if text_content and "**ID:** `" in text_content:
-            try:
-                start_index = text_content.find("`") + 1
-                end_index = text_content.find("`", start_index)
-                extracted_id = text_content[start_index:end_index]
-                user_id_to_ban = int(extracted_id)
-                # استخراج السبب إذا تمت كتابته بعد الأمر
-                if context.args:
-                    reason = " ".join(context.args)
-            except (ValueError, IndexError):
-                await update.message.reply_text("لم أتمكن من استخراج ID المستخدم من الرسالة.")
-                return
-        else:
-            await update.message.reply_text("للحظر بالرد، يجب أن تكون الرسالة هي رسالة المستخدم المحولة التي تحتوي على ID.")
-            return
-            
-    # الحالة الثانية: الحظر عن طريق كتابة الـ ID
-    elif context.args:
-        try:
-            user_id_to_ban = int(context.args[0])
-            if len(context.args) > 1:
-                reason = " ".join(context.args[1:])
-        except (ValueError, IndexError):
-            await update.message.reply_text("معرف المستخدم غير صحيح. الصيغة: /ban <user_id> [السبب]")
-            return
-            
-    # إذا لم يتم تحديد ID بأي طريقة
-    else:
-        await update.message.reply_text("الاستخدام:\n- قم بالرد على رسالة المستخدم بالأمر /ban [السبب]\n- أو استخدم: /ban <user_id> [السبب]")
-        return
-
-    # تنفيذ الحظر
-    if user_id_to_ban and is_user_banned(user_id_to_ban):
-        await update.message.reply_text(f"المستخدم `{user_id_to_ban}` محظور بالفعل.", parse_mode=ParseMode.MARKDOWN)
-        return
-        
-    if user_id_to_ban and ban_user(user_id_to_ban, update.effective_user.id, reason):
-        await update.message.reply_text(f"🚫 تم حظر المستخدم `{user_id_to_ban}` بنجاح.\n**السبب:** {reason}", parse_mode=ParseMode.MARKDOWN)
-
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
+    if not context.args: return await update.message.reply_text("الصيغة: /ban <user_id> [السبب]")
+    try:
+        user_id = int(context.args[0])
+        reason = " ".join(context.args[1:]) or "بدون سبب"
+        if is_user_banned(user_id): return await update.message.reply_text(f"المستخدم {user_id} محظور بالفعل.")
+        if ban_user(user_id, update.effective_user.id, reason): await update.message.reply_text(f"🚫 تم حظر المستخدم {user_id}.\nالسبب: {reason}")
+    except (ValueError, IndexError): await update.message.reply_text("معرف المستخدم غير صحيح.")
 
 async def unban_command(update: Update, context: CallbackContext) -> None:
-    if not update.message or not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID:
-        return
-
-    user_id_to_unban = None
-    replied_message = update.message.reply_to_message
-
-    # الحالة الأولى: رفع الحظر عن طريق الرد
-    if replied_message:
-        text_content = replied_message.text or replied_message.caption
-        if text_content and "**ID:** `" in text_content:
-            try:
-                start_index = text_content.find("`") + 1
-                end_index = text_content.find("`", start_index)
-                extracted_id = text_content[start_index:end_index]
-                user_id_to_unban = int(extracted_id)
-            except (ValueError, IndexError):
-                await update.message.reply_text("لم أتمكن من استخراج ID المستخدم من الرسالة.")
-                return
-        else:
-            await update.message.reply_text("لرفع الحظر بالرد، يجب أن تكون الرسالة هي رسالة المستخدم المحولة التي تحتوي على ID.")
-            return
-
-    # الحالة الثانية: رفع الحظر عن طريق كتابة الـ ID
-    elif context.args:
-        try:
-            user_id_to_unban = int(context.args[0])
-        except (ValueError, IndexError):
-            await update.message.reply_text("معرف المستخدم غير صحيح. الصيغة: /unban <user_id>")
-            return
-            
-    # إذا لم يتم تحديد ID
-    else:
-        await update.message.reply_text("الاستخدام:\n- قم بالرد على رسالة المستخدم بالأمر /unban\n- أو استخدم: /unban <user_id>")
-        return
-
-    # تنفيذ رفع الحظر
-    if user_id_to_unban and not is_user_banned(user_id_to_unban):
-        await update.message.reply_text(f"المستخدم `{user_id_to_unban}` ليس محظوراً بالأصل.", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    if user_id_to_unban and unban_user(user_id_to_unban):
-        await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم `{user_id_to_unban}` بنجاح.", parse_mode=ParseMode.MARKDOWN)
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
+    if not context.args: return await update.message.reply_text("الصيغة: /unban <user_id>")
+    try:
+        user_id = int(context.args[0])
+        if not is_user_banned(user_id): return await update.message.reply_text(f"المستخدم {user_id} ليس محظوراً.")
+        if unban_user(user_id): await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم {user_id}.")
+    except (ValueError, IndexError): await update.message.reply_text("معرف المستخدم غير صحيح.")
 
 async def banned_list_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
@@ -617,36 +515,20 @@ async def handle_broadcast_message(update: Update, context: CallbackContext) -> 
     await update.message.reply_text(f"**📣 اكتمل الإرسال الجماعي:**\n👍 نجح: {successful}\n👎 فشل: {failed}", parse_mode=ParseMode.MARKDOWN)
 
 async def setup_commands(application: Application) -> None:
-    # 1. تعيين الزر الأزرق "Menu" الافتراضي ليظهر لجميع المستخدمين في المحادثة الخاصة
-    try:
-        await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-        logger.info("Default menu button set to show commands.")
-    except Exception as e:
-        logger.error(f"Failed to set the default menu button: {e}")
-
-    # 2. تعيين قائمة الأوامر التي تظهر للمستخدم العادي عند الضغط على الزر
-    user_commands = [
-        BotCommand("start", "🚀 بدء/عودة للقائمة"),
-        BotCommand("help", "❓ مساعدة")
-    ]
+    user_commands = [BotCommand("start", "🚀 بدء/عودة للقائمة"), BotCommand("help", "❓ مساعدة")]
     await application.bot.set_my_commands(user_commands, scope=BotCommandScopeAllPrivateChats())
     
-    # 3. تعيين قائمة أوامر الأدمن التي تظهر في جروب الأدمن فقط
     admin_commands = [
-        BotCommand("stats", "📊 الإحصائيات"),
-        BotCommand("export", "📁 تصدير البيانات"),
-        BotCommand("import", "📥 استيراد البيانات"),
-        BotCommand("broadcast", "📡 رسالة جماعية"),
-        BotCommand("ban", "🚫 حظر مستخدم"),
-        BotCommand("unban", "✅ رفع الحظر"),
-        BotCommand("banned", "📋 قائمة المحظورين")
+        BotCommand("stats", "📊 الإحصائيات"), BotCommand("export", "📁 تصدير البيانات"),
+        BotCommand("import", "📥 استيراد البيانات"), BotCommand("broadcast", "📡 رسالة جماعية"),
+        BotCommand("ban", "🚫 حظر"), BotCommand("unban", "✅ رفع الحظر"),
+        BotCommand("banned", "📋 المحظورين")
     ]
-    # تأكد أن البوت مشرف في الجروب لكي يعمل هذا الجزء
     if ADMIN_GROUP_ID != 0:
       await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_GROUP_ID))
     
-    logger.info("Bot commands have been set successfully for all scopes.")
-
+    await application.bot.set_my_commands([], scope=None)
+    logger.info("Bot commands have been set successfully.")
 
 async def handle_admin_reply_or_broadcast(update: Update, context: CallbackContext) -> None:
     if not update.effective_user: return
@@ -657,25 +539,10 @@ async def handle_admin_reply_or_broadcast(update: Update, context: CallbackConte
     elif update.message and update.message.reply_to_message:
         await handle_admin_reply(update, context)
 
-
-# --- الدالة الرئيسية ---
-
-async def main() -> None:
-    """الدالة الرئيسية لإعداد وتشغيل البوت وخادم الويب."""
-    
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN environment variable is not set!")
-        return
-    if not ADMIN_GROUP_ID or ADMIN_GROUP_ID == 0:
-        logger.error("ADMIN_GROUP_ID environment variable is not set or invalid!")
-        return
-
-    web_server_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_server_thread.start()
-    logger.info("Web server thread started.")
-
+def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Commands
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stats", stats_command))
@@ -689,23 +556,35 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(orders_list|instructions|main_menu)"))
     application.add_handler(CallbackQueryHandler(how_to_reply_callback, pattern="^how_to_reply$"))
     
+    # Message Handlers
     all_media_filters = (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.VIDEO | filters.Sticker.ALL)
     
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND & all_media_filters, handle_user_message))
     application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & all_media_filters, handle_admin_reply_or_broadcast))
 
     application.post_init = setup_commands
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+from flask import Flask
+import threading
 
-    logger.info("Bot application configured. Starting polling...")
+# Flask web server for Render health check
+app = Flask(__name__)
 
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+@app.route('/')
+def index():
+    return "Bot is running fine!"
 
-    while True:
-        await asyncio.sleep(3600)
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
-
+# Start the web server in a separate thread
+threading.Thread(target=run_web_server).start()
 if __name__ == "__main__":
-    logger.info("Starting bot application...")
-    asyncio.run(main())
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is not set!")
+        exit(1)
+    if not ADMIN_GROUP_ID or ADMIN_GROUP_ID == 0:
+        logger.error("ADMIN_GROUP_ID environment variable is not set or invalid!")
+        exit(1)
+    main()
