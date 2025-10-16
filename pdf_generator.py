@@ -1,70 +1,100 @@
-import re
-from typing import Dict, List
+import os
+import html
+from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+from datetime import datetime
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
 
-def parse_question_text(text: str) -> Dict[str, any]:
+import arabic_reshaper
+from bidi.algorithm import get_display
+
+# --- الإعدادات ---
+ARABIC_FONT_NAME = "Amiri-Regular"
+ARABIC_FONT_FILE = "Amiri-Regular.ttf"
+
+def register_arabic_font():
+    """يسجل الخط العربي لكي تتمكن المكتبة من استخدامه."""
+    try:
+        if ARABIC_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(ARABIC_FONT_NAME, ARABIC_FONT_FILE))
+    except Exception as e:
+        print(f"CRITICAL: Could not register font {ARABIC_FONT_FILE}. Error: {e}")
+
+def draw_header_footer(canvas, doc):
     """
-    يحلل النص باستخدام الكلمات المفتاحية والأنماط لفصل السؤال عن الخيارات.
+    هذه الدالة ترسم العناصر الثابتة مثل الهيدر والفوتر.
     """
-    # 1. البحث باستخدام الكلمات المفتاحية (الطريقة الأساسية)
-    option_keywords = ['الاختيارات', 'الخيارات']
-    question_text = text
-    options_text = ''
-    
-    for keyword in option_keywords:
-        # البحث عن الكلمة المفتاحية مع تجاهل حالة الأحرف
-        match = re.search(r'\b' + keyword + r'\b.*', text, re.IGNORECASE | re.DOTALL)
-        if match:
-            # كل ما قبل الكلمة المفتاحية هو السؤال
-            question_text = text[:match.start()].strip()
-            # كل ما بعدها هو الخيارات
-            options_text = text[match.start():].strip()
-            # إزالة الكلمة المفتاحية نفسها من بداية نص الخيارات
-            options_text = re.sub(r'^\s*' + keyword + r'\s*[:\n]*', '', options_text, flags=re.IGNORECASE).strip()
-            break
+    canvas.saveState()
+    reshaped_header = arabic_reshaper.reshape("تجميعات القدرات - بوت هدفك")
+    bidi_header = get_display(reshaped_header)
+    canvas.setFont(ARABIC_FONT_NAME, 12)
+    canvas.drawCentredString(A4[0] / 2, A4[1] - 2 * cm, bidi_header)
+    canvas.setStrokeColorRGB(0, 0, 0)
+    canvas.line(1 * cm, A4[1] - 2.5 * cm, A4[0] - 1 * cm, A4[1] - 2.5 * cm)
+    reshaped_footer = arabic_reshaper.reshape(f"صفحة {doc.page}")
+    bidi_footer = get_display(reshaped_footer)
+    canvas.setFont(ARABIC_FONT_NAME, 9)
+    canvas.drawCentredString(A4[0] / 2, 1.5 * cm, bidi_footer)
+    canvas.restoreState()
 
-    # 2. تنظيف السؤال من الجمل الحوارية
-    common_intros = [
-        "يا جماعة", "جاني سؤال", "جالي سؤال", "السؤال كان", "كان فيه سؤال", "سؤال اليوم",
-        "للعلم مش متاكده", "للعلم اخترت", "اعتقد صيغه دقيقه", "اللفظي كان في قطعه"
-    ]
-    for intro in common_intros:
-        question_text = re.sub(r'.*' + intro + r'.*[\n:]*', '', question_text, flags=re.IGNORECASE).strip()
+def create_questions_pdf(questions_data: dict, file_path: str) -> str:
+    """
+    ينشئ ملف PDF بتصميم مخصص من عمود واحد وخيارات أفقية.
+    """
+    register_arabic_font()
+    doc = BaseDocTemplate(file_path, pagesize=A4)
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height - 2*cm, id='normal')
+    template = PageTemplate(id='main_template', frames=[frame], onPage=draw_header_footer)
+    doc.addPageTemplates([template])
+    story = []
     
-    # 3. استخراج الخيارات من نص الخيارات
-    options = []
-    if options_text:
-        # تقسيم الخيارات حسب الأسطر الجديدة
-        options = [line.strip() for line in options_text.split('\n') if line.strip()]
-        # تنظيف إضافي للخيارات (إزالة الترقيم إن وجد)
-        option_pattern = re.compile(r'^\s*([أ-ي]\s*[.)-]|[\w]\s*[.)-]|[1-9]\d*\s*[.)-]|[*•-]\s+)', re.IGNORECASE)
-        options = [option_pattern.sub('', opt).strip() for opt in options]
-    
-    # 4. إذا لم يتم العثور على خيارات عبر الكلمات المفتاحية، نستخدم الطريقة القديمة كخطة بديلة
-    if not options and not options_text:
-        lines = text.strip().split('\n')
-        option_pattern = re.compile(r'^\s*([أ-ي]\s*[.)-]|[\w]\s*[.)-]|[1-9]\d*\s*[.)-]|[*•-]\s+)', re.IGNORECASE)
-        question_lines = []
-        option_lines = []
-        is_reading_options = False
+    styles = getSampleStyleSheet()
+    question_style = ParagraphStyle('QuestionStyle', parent=styles['Normal'], fontName=ARABIC_FONT_NAME, fontSize=14, alignment=TA_RIGHT, spaceBefore=10, spaceAfter=10, leading=22)
+    option_style = ParagraphStyle('OptionStyle', parent=styles['Normal'], fontName=ARABIC_FONT_NAME, fontSize=12, alignment=TA_RIGHT, leftIndent=20, leading=18)
 
-        for line in lines:
-            if option_pattern.match(line.strip()):
-                is_reading_options = True
-            if is_reading_options:
-                clean_option = option_pattern.sub('', line.strip()).strip()
-                if clean_option: option_lines.append(clean_option)
-            else:
-                question_lines.append(line)
+    def format_arabic_text(text):
+        if not text: return ""
+        reshaped_text = arabic_reshaper.reshape(text)
+        bidi_text = get_display(reshaped_text)
+        return bidi_text
+
+    sorted_questions = sorted(questions_data.values(), key=lambda x: x['timestamp'])
+
+    for i, q in enumerate(sorted_questions, 1):
+        raw_question_text = q.get('question_text') or q.get('raw_content') or "(مشاركة وسائط بدون نص)"
+        safe_question_text = html.escape(raw_question_text)
+        final_paragraph_text = f"<b>{i}) السؤال:</b><br/>{safe_question_text.replace(chr(10), '<br/>')}"
+        story.append(Paragraph(format_arabic_text(final_paragraph_text), question_style))
         
-        if option_lines:
-            question_text = "\n".join(question_lines).strip()
-            options = option_lines
+        # --- بداية التعديل: منطق الخيارات الأفقية ---
+        if q.get('options'):
+            story.append(Spacer(1, 8))
+            option_letters = ['أ', 'ب', 'ج', 'د', 'هـ', 'و']
+            
+            horizontal_options = []
+            for j, opt in enumerate(q['options']):
+                safe_opt = html.escape(opt)
+                letter = option_letters[j] if j < len(option_letters) else '•'
+                # تنسيق كل خيار على حدة
+                formatted_part = f"{letter}) {safe_opt}"
+                horizontal_options.append(formatted_part)
 
-    # التأكد من أن السؤال ليس فارغًا
-    if not question_text.strip():
-        question_text = text # إذا فشل كل شيء، اعتبر النص كله سؤال
+            # تجميع كل الخيارات في سطر واحد مع فواصل
+            full_options_string = "    -    ".join(horizontal_options)
+            
+            # إنشاء فقرة واحدة للسطر الأفقي
+            story.append(Paragraph(format_arabic_text(full_options_string), option_style))
+        # --- نهاية التعديل ---
 
-    return {
-        "question_text": question_text.strip(),
-        "options": [opt for opt in options if opt] # إزالة الخيارات الفارغة
-    }
+        story.append(Spacer(1, 20))
+
+    try:
+        doc.build(story)
+        return file_path
+    except Exception as e:
+        print(f"Failed to build PDF with custom design: {e}")
+        return None
