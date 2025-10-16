@@ -36,12 +36,14 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
 
-# Load Topic IDs from .env
+# Load Topic IDs from .env for six banks
 TOPIC_IDS = {
     '1': int(os.getenv("TOPIC_ID_BANK_1", "0")),
     '2': int(os.getenv("TOPIC_ID_BANK_2", "0")),
     '3': int(os.getenv("TOPIC_ID_BANK_3", "0")),
     '4': int(os.getenv("TOPIC_ID_BANK_4", "0")),
+    '5': int(os.getenv("TOPIC_ID_BANK_5", "0")),
+    '6': int(os.getenv("TOPIC_ID_BANK_6", "0")),
 }
 
 # Data storage files
@@ -126,6 +128,7 @@ async def start_command(update: Update, context: CallbackContext) -> None:
     keyboard = [
         [InlineKeyboardButton("🏦 البنك الأول", callback_data="select_bank:1"), InlineKeyboardButton("🏦 البنك الثاني", callback_data="select_bank:2")],
         [InlineKeyboardButton("🏦 البنك الثالث", callback_data="select_bank:3"), InlineKeyboardButton("🏦 البنك الرابع", callback_data="select_bank:4")],
+        [InlineKeyboardButton("🏦 البنك الخامس", callback_data="select_bank:5"), InlineKeyboardButton("🏦 البنك السادس", callback_data="select_bank:6")],
         [InlineKeyboardButton("💡 كيف أستخدم البوت؟", callback_data="instructions")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -211,6 +214,13 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     
     elif query.data == "main_menu":
         await start_command(update, context)
+
+# --- NEW: Handler for the "How to Reply" button ---
+async def how_to_reply_callback(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    if not query: return
+    reply_instructions = "للرد على المشرف، قم بعمل 'رد' (Reply) على هذه الرسالة وسيصل ردك إليه مباشرةً."
+    await query.answer(text=reply_instructions, show_alert=True)
 
 # --- CORE MESSAGE HANDLING LOGIC ---
 async def handle_user_reply(update: Update, context: CallbackContext) -> None:
@@ -317,6 +327,7 @@ async def forward_to_admin_topic(context: CallbackContext, q_data: Dict, topic_i
     except Exception as e:
         logger.error(f"Error forwarding to admin group topic {topic_id}: {e}")
         
+### MODIFIED ###
 async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     admin_message = update.message
     if not admin_message or not admin_message.reply_to_message: return
@@ -334,20 +345,24 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     reply_data = replies_data[question_id]
     user_id = reply_data['user_id']
     sent_message_to_user = None
+    
+    # Create the "How to Reply" button
+    reply_button = InlineKeyboardButton("💡 كيفية الرد", callback_data="how_to_reply")
+    reply_markup = InlineKeyboardMarkup([[reply_button]])
 
     try:
         if admin_message.text:
-            sent_message_to_user = await context.bot.send_message(chat_id=user_id, text=admin_message.text)
+            sent_message_to_user = await context.bot.send_message(chat_id=user_id, text=admin_message.text, reply_markup=reply_markup)
         elif admin_message.photo:
-            sent_message_to_user = await context.bot.send_photo(chat_id=user_id, photo=admin_message.photo[-1].file_id, caption=admin_message.caption)
+            sent_message_to_user = await context.bot.send_photo(chat_id=user_id, photo=admin_message.photo[-1].file_id, caption=admin_message.caption, reply_markup=reply_markup)
         elif admin_message.sticker:
-            sent_message_to_user = await context.bot.send_sticker(chat_id=user_id, sticker=admin_message.sticker.file_id)
+            sent_message_to_user = await context.bot.send_sticker(chat_id=user_id, sticker=admin_message.sticker.file_id, reply_markup=reply_markup)
         elif admin_message.voice:
-            sent_message_to_user = await context.bot.send_voice(chat_id=user_id, voice=admin_message.voice.file_id)
+            sent_message_to_user = await context.bot.send_voice(chat_id=user_id, voice=admin_message.voice.file_id, reply_markup=reply_markup)
         elif admin_message.video:
-             sent_message_to_user = await context.bot.send_video(chat_id=user_id, video=admin_message.video.file_id, caption=admin_message.caption)
+             sent_message_to_user = await context.bot.send_video(chat_id=user_id, video=admin_message.video.file_id, caption=admin_message.caption, reply_markup=reply_markup)
         else:
-             sent_message_to_user = await admin_message.copy(chat_id=user_id)
+             sent_message_to_user = await admin_message.copy(chat_id=user_id, reply_markup=reply_markup)
 
         if not sent_message_to_user:
             raise ValueError("Failed to send message to user.")
@@ -525,6 +540,9 @@ def main():
                 "unban": unban_command, "banned": banned_list_command}
     for cmd, func in commands.items(): application.add_handler(CommandHandler(cmd, func))
 
+    # Add the new callback handler for the reply button
+    application.add_handler(CallbackQueryHandler(how_to_reply_callback, pattern="^how_to_reply$"))
+    
     application.add_handler(CallbackQueryHandler(select_bank_handler, pattern="^select_bank:"))
     application.add_handler(CallbackQueryHandler(caption_help_handler, pattern="^caption_help$"))
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(instructions|main_menu)"))
