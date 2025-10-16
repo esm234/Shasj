@@ -4,3 +4,5 @@ flask==2.3.3
 requests==2.31.0
 gunicorn==21.2.0
 reportlab==4.0.9
+arabic_reshaper
+python-bidi
