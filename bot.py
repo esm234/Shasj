@@ -661,7 +661,7 @@ async def handle_admin_reply_or_broadcast(update: Update, context: CallbackConte
 
 async def main() -> None:
     """الدالة الرئيسية لإعداد وتشغيل البوت وخادم الويب."""
-    
+
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN environment variable is not set!")
         return
@@ -669,12 +669,15 @@ async def main() -> None:
         logger.error("ADMIN_GROUP_ID environment variable is not set or invalid!")
         return
 
+    # 🧩 تشغيل السيرفر الجانبي (لو خاص بلوحة التحكم أو webhook)
     web_server_thread = threading.Thread(target=run_web_server, daemon=True)
     web_server_thread.start()
     logger.info("Web server thread started.")
 
+    # 🧠 إنشاء التطبيق
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # 🧱 أوامر البوت
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stats", stats_command))
@@ -684,27 +687,33 @@ async def main() -> None:
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("banned", banned_list_command))
     application.add_handler(CommandHandler("import", import_command))
-    
+
+    # 🎛 أزرار التفاعل
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(orders_list|instructions|main_menu)"))
     application.add_handler(CallbackQueryHandler(how_to_reply_callback, pattern="^how_to_reply$"))
-    
-    all_media_filters = (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL | filters.VIDEO | filters.Sticker.ALL)
-    
-    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND & all_media_filters, handle_user_message))
-    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & all_media_filters, handle_admin_reply_or_broadcast))
 
-    application.post_init = setup_commands
+    # 📨 استقبال كل أنواع الرسائل
+    all_media_filters = (
+        filters.TEXT
+        | filters.PHOTO
+        | filters.VOICE
+        | filters.AUDIO
+        | filters.Document.ALL
+        | filters.VIDEO
+        | filters.Sticker.ALL
+    )
+
+    application.add_handler(
+        MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND & all_media_filters, handle_user_message)
+    )
+    application.add_handler(
+        MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND & all_media_filters, handle_admin_reply_or_broadcast)
+    )
+
+    # ✅ استدعاء فعلي لتسجيل الأوامر (بدل post_init)
+    await setup_commands(application)
 
     logger.info("Bot application configured. Starting polling...")
 
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-
-    while True:
-        await asyncio.sleep(3600)
-
-
-if __name__ == "__main__":
-    logger.info("Starting bot application...")
-    asyncio.run(main())
+    # ✅ تشغيل البوت بالطريقة المضمونة
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
