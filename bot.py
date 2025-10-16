@@ -58,7 +58,6 @@ banned_users: Dict[str, dict] = {}
 active_users: Dict[int, dict] = {}
 
 # --- DATA HANDLING FUNCTIONS ---
-# ... (All data handling functions are unchanged) ...
 def load_data(filename: str) -> Dict:
     try:
         if os.path.exists(filename):
@@ -110,12 +109,24 @@ def get_all_user_ids() -> List[int]:
     active_user_ids = set(int(uid) for uid in active_users.keys())
     return list(question_user_ids.union(active_user_ids))
 
-# --- USER-FACING COMMANDS (Unchanged) ---
-# ... (start_command, select_bank_handler, etc. are unchanged) ...
+# --- USER-FACING COMMANDS AND HANDLERS ---
+
+### MODIFIED ###
 async def start_command(update: Update, context: CallbackContext) -> None:
     user = update.effective_user
     if not user: return
-    
+
+    # <<< THIS IS THE NEW BAN CHECK >>>
+    # Check if the user is banned at the very beginning.
+    if is_user_banned(user.id):
+        # Determine how to reply (based on command or button press)
+        if update.message:
+            await update.message.reply_text("🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.")
+        elif update.callback_query:
+            await update.callback_query.answer(text="🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.", show_alert=True)
+        return # Stop the function here
+
+    # --- The rest of the function only runs for non-banned users ---
     context.user_data.pop('selected_bank', None)
     
     keyboard = [
@@ -150,6 +161,8 @@ async def start_command(update: Update, context: CallbackContext) -> None:
         await update.callback_query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await update.message.reply_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+
+# --- (Rest of the code is unchanged) ---
 
 async def select_bank_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
@@ -208,8 +221,6 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
         await start_command(update, context)
 
 
-# --- CORE MESSAGE HANDLING (Unchanged) ---
-# ... (handle_user_reply, handle_photo_question, handle_text_message are unchanged) ...
 async def handle_user_reply(update: Update, context: CallbackContext) -> None:
     if not update.message or not update.message.reply_to_message or not update.effective_user: return
     if is_user_banned(update.effective_user.id): return
@@ -279,7 +290,9 @@ async def handle_photo_question(update: Update, context: CallbackContext) -> Non
 
 async def handle_text_message(update: Update, context: CallbackContext) -> None:
     user, message = update.effective_user, update.message
-    if not user or not message or is_user_banned(user.id): return
+    if not user or not message or is_user_banned(user.id): 
+        if user and is_user_banned(user.id): await message.reply_text("🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.")
+        return
 
     if context.user_data.get('selected_bank'):
         await message.reply_text("⏳ في انتظار الصورة... الرجاء إرسال **صورة** السؤال الآن.", parse_mode=ParseMode.MARKDOWN)
@@ -287,13 +300,12 @@ async def handle_text_message(update: Update, context: CallbackContext) -> None:
         await message.reply_text("لبدء إرسال استفسار، يرجى الضغط على /start واختيار البنك أولاً.")
 
 
-# --- FORWARDING AND ADMIN REPLIES (Unchanged) ---
-# ... (forward_to_admin_topic and handle_admin_reply are unchanged from previous version) ...
 async def forward_to_admin_topic(context: CallbackContext, q_data: Dict, topic_id: int or None):
     safe_fullname = escape_legacy_markdown(q_data['fullname'])
     safe_username = escape_legacy_markdown(q_data['username']) if q_data['username'] else "غير متوفر"
     
     caption = (f"**استفسار جديد - بنك رقم {q_data['bank_number']}** 📥\n"
+               f"**التوجيه إلى Topic ID:** `{topic_id}`\n"
                f"**من:** {safe_fullname}\n"
                f"**يوزر:** @{safe_username}\n"
                f"**ID المستخدم:** `{q_data['user_id']}`\n\n"
@@ -319,7 +331,6 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     replied_msg_id = admin_message.reply_to_message.message_id
     question_id = None
     
-    # Find the conversation
     for qid, data in replies_data.items():
         if data.get('admin_message_id') == replied_msg_id or replied_msg_id in data.get('admin_thread_ids', []):
             question_id = qid
@@ -332,7 +343,6 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     sent_message_to_user = None
 
     try:
-        # Rebuild the message instead of copying it
         if admin_message.text:
             sent_message_to_user = await context.bot.send_message(chat_id=user_id, text=admin_message.text)
         elif admin_message.photo:
@@ -343,7 +353,7 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
             sent_message_to_user = await context.bot.send_voice(chat_id=user_id, voice=admin_message.voice.file_id)
         elif admin_message.video:
              sent_message_to_user = await context.bot.send_video(chat_id=user_id, video=admin_message.video.file_id, caption=admin_message.caption)
-        else: # Fallback for other types
+        else:
              sent_message_to_user = await admin_message.copy(chat_id=user_id)
 
         if not sent_message_to_user:
@@ -362,35 +372,25 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
         logger.error(f"Error sending reply to user: {e}")
         await admin_message.reply_text(f"❌ فشل إرسال الرد. قد يكون المستخدم قد حظر البوت.\nالخطأ: {e}")
 
-### NEW HELPER FUNCTION for Ban/Unban ###
 def _get_user_id_from_thread(replied_msg_id: int) -> int or None:
-    """Finds the original user ID by looking up the conversation thread."""
     question_id = None
-    # Find the conversation this message belongs to
     for qid, data in replies_data.items():
         if data.get('admin_message_id') == replied_msg_id or replied_msg_id in data.get('admin_thread_ids', []):
             question_id = qid
             break
-            
-    # If a conversation is found, get the user ID from the original question data
     if question_id and question_id in questions_data:
         return questions_data[question_id].get('user_id')
-        
     return None
 
-### MODIFIED ###
 async def ban_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
     
-    user_id_to_ban = None
-    reason = "بدون سبب"
+    user_id_to_ban, reason = None, "بدون سبب"
 
-    # Handle banning by reply (New, robust method)
     if update.message.reply_to_message:
         replied_msg_id = update.message.reply_to_message.message_id
         user_id_to_ban = _get_user_id_from_thread(replied_msg_id)
         reason = " ".join(context.args) if context.args else "بدون سبب"
-    # Fallback to old method: /ban <id> [reason]
     else:
         if not context.args:
             return await update.message.reply_text("الصيغة: /ban <user_id> [السبب]\nأو قم بالرد على رسالة المستخدم بالأمر /ban")
@@ -410,17 +410,13 @@ async def ban_command(update: Update, context: CallbackContext) -> None:
     save_data(banned_users, BANS_FILE)
     await update.message.reply_text(f"🚫 تم حظر المستخدم `{user_id_to_ban}`.\nالسبب: {reason}", parse_mode=ParseMode.MARKDOWN)
 
-### MODIFIED ###
 async def unban_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
-
     user_id_to_unban = None
 
-    # Handle unbanning by reply (New, robust method)
     if update.message.reply_to_message:
         replied_msg_id = update.message.reply_to_message.message_id
         user_id_to_unban = _get_user_id_from_thread(replied_msg_id)
-    # Fallback to old method: /unban <id>
     else:
         if not context.args:
             return await update.message.reply_text("الصيغة: /unban <user_id>\nأو قم بالرد على رسالة المستخدم بالأمر /unban")
@@ -440,7 +436,6 @@ async def unban_command(update: Update, context: CallbackContext) -> None:
     save_data(banned_users, BANS_FILE)
     await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم `{user_id_to_unban}`.", parse_mode=ParseMode.MARKDOWN)
     
-# ... (stats, export, import, broadcast, help, banned_list, and admin_messages handlers are unchanged) ...
 async def stats_command(update: Update, context: CallbackContext) -> None:
     if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
     total_questions, unique_users, bank_counts = len(questions_data), len(get_all_user_ids()), {}
@@ -517,14 +512,11 @@ async def banned_list_command(update: Update, context: CallbackContext) -> None:
 
 async def handle_admin_messages(update: Update, context: CallbackContext) -> None:
     if not update.message or not update.effective_user: return
-    # This logic is simplified because command handlers (like ban) will take precedence.
-    # So we only need to check for replies (for conversations) or broadcasts.
     if update.message.reply_to_message:
         await handle_admin_reply(update, context)
     elif waiting_for_broadcast.get(update.effective_user.id):
         await handle_broadcast_message(update, context)
 
-# --- WEB SERVER & MAIN APP ---
 app = Flask(__name__)
 @app.route('/')
 def index(): return "Bot is running!"
@@ -535,13 +527,11 @@ def run_web_server():
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Command Handlers
     commands = {"start": start_command, "help": help_command, "stats": stats_command, "export": export_command, 
                 "import": import_command, "broadcast": broadcast_command, "ban": ban_command, 
                 "unban": unban_command, "banned": banned_list_command}
     for cmd, func in commands.items(): application.add_handler(CommandHandler(cmd, func))
 
-    # Callback & Message Handlers
     application.add_handler(CallbackQueryHandler(select_bank_handler, pattern="^select_bank:"))
     application.add_handler(CallbackQueryHandler(caption_help_handler, pattern="^caption_help$"))
     application.add_handler(CallbackQueryHandler(button_handler, pattern="^(instructions|main_menu)"))
