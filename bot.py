@@ -110,23 +110,17 @@ def get_all_user_ids() -> List[int]:
     return list(question_user_ids.union(active_user_ids))
 
 # --- USER-FACING COMMANDS AND HANDLERS ---
-
-### MODIFIED ###
 async def start_command(update: Update, context: CallbackContext) -> None:
     user = update.effective_user
     if not user: return
 
-    # <<< THIS IS THE NEW BAN CHECK >>>
-    # Check if the user is banned at the very beginning.
     if is_user_banned(user.id):
-        # Determine how to reply (based on command or button press)
         if update.message:
             await update.message.reply_text("🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.")
         elif update.callback_query:
             await update.callback_query.answer(text="🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.", show_alert=True)
-        return # Stop the function here
+        return
 
-    # --- The rest of the function only runs for non-banned users ---
     context.user_data.pop('selected_bank', None)
     
     keyboard = [
@@ -161,8 +155,6 @@ async def start_command(update: Update, context: CallbackContext) -> None:
         await update.callback_query.edit_message_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     else:
         await update.message.reply_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-
-# --- (Rest of the code is unchanged) ---
 
 async def select_bank_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
@@ -220,7 +212,7 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     elif query.data == "main_menu":
         await start_command(update, context)
 
-
+# --- CORE MESSAGE HANDLING LOGIC ---
 async def handle_user_reply(update: Update, context: CallbackContext) -> None:
     if not update.message or not update.message.reply_to_message or not update.effective_user: return
     if is_user_banned(update.effective_user.id): return
@@ -290,8 +282,9 @@ async def handle_photo_question(update: Update, context: CallbackContext) -> Non
 
 async def handle_text_message(update: Update, context: CallbackContext) -> None:
     user, message = update.effective_user, update.message
-    if not user or not message or is_user_banned(user.id): 
-        if user and is_user_banned(user.id): await message.reply_text("🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.")
+    if not user or not message: return
+    if is_user_banned(user.id): 
+        await message.reply_text("🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.")
         return
 
     if context.user_data.get('selected_bank'):
