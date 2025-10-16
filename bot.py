@@ -34,14 +34,13 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
 
-# MODIFIED: Load Topic IDs from .env
+# Load Topic IDs from .env
 TOPIC_IDS = {
     '1': int(os.getenv("TOPIC_ID_BANK_1", "0")),
     '2': int(os.getenv("TOPIC_ID_BANK_2", "0")),
     '3': int(os.getenv("TOPIC_ID_BANK_3", "0")),
     '4': int(os.getenv("TOPIC_ID_BANK_4", "0")),
 }
-
 
 # Data storage files
 DATA_FILE = 'questions_data.json'
@@ -56,7 +55,7 @@ waiting_for_broadcast: Dict[int, bool] = {}
 banned_users: Dict[str, dict] = {}
 active_users: Dict[int, dict] = {}
 
-# Load/Save data functions (unchanged)
+# --- DATA HANDLING FUNCTIONS ---
 def load_data(filename: str) -> Dict:
     try:
         if os.path.exists(filename):
@@ -101,47 +100,18 @@ replies_data = load_data(REPLIES_FILE)
 banned_users = load_data(BANS_FILE)
 active_users = load_users_data()
 
-# Helper functions for Ban management (unchanged)
+# --- HELPER FUNCTIONS ---
 def is_user_banned(user_id: int) -> bool: return str(user_id) in banned_users
-def ban_user(user_id: int, admin_id: int, reason: str = "No reason provided") -> bool:
-    try:
-        banned_users[str(user_id)] = {'banned_at': datetime.now().isoformat(), 'banned_by': admin_id, 'reason': reason}
-        save_data(banned_users, BANS_FILE)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to ban user {user_id}: {e}")
-        return False
-
-def unban_user(user_id: int) -> bool:
-    try:
-        if str(user_id) in banned_users:
-            del banned_users[str(user_id)]
-            save_data(banned_users, BANS_FILE)
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Failed to unban user {user_id}: {e}")
-        return False
-
-def get_banned_users() -> List[Dict]:
-    banned_list = []
-    for user_id, ban_data in banned_users.items():
-        banned_list.append({'user_id': int(user_id), **ban_data})
-    return banned_list
-    
 def get_all_user_ids() -> List[int]:
     question_user_ids = set(q['user_id'] for q in questions_data.values())
     active_user_ids = set(int(uid) for uid in active_users.keys())
     return list(question_user_ids.union(active_user_ids))
 
-# --- BOT COMMANDS AND HANDLERS ---
-
-# MODIFIED: start_command now shows question banks
+# --- USER-FACING COMMANDS AND HANDLERS ---
 async def start_command(update: Update, context: CallbackContext) -> None:
     user = update.effective_user
     if not user: return
     
-    # Reset user state
     context.user_data.pop('selected_bank', None)
     
     keyboard = [
@@ -177,7 +147,6 @@ async def start_command(update: Update, context: CallbackContext) -> None:
     else:
         await update.message.reply_text(welcome_message, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
-# NEW: Handler for bank selection buttons
 async def select_bank_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query or not query.from_user: return
@@ -199,14 +168,12 @@ async def select_bank_handler(update: Update, context: CallbackContext) -> None:
     ]
     await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
-# NEW: Handler for the caption help button (popup)
 async def caption_help_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query: return
     help_text = "عند اختيارك للصورة من معرض الصور، ستجد خانة لإضافة شرح أو تعليق قبل الضغط على زر الإرسال. اكتب استفسارك في هذه الخانة."
     await query.answer(text=help_text, show_alert=True)
     
-# MODIFIED: Button handler for main menu and instructions
 async def button_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     if not query or not query.from_user: return
@@ -236,108 +203,80 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     elif query.data == "main_menu":
         await start_command(update, context)
 
-# NEW: Main handler for user photo submissions
+# --- CORE MESSAGE HANDLING LOGIC ---
 async def handle_photo_question(update: Update, context: CallbackContext) -> None:
     user, message = update.effective_user, update.message
     if not user or not message or is_user_banned(user.id):
-        if is_user_banned(user.id): await message.reply_text("🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.")
+        if user and is_user_banned(user.id): await message.reply_text("🚫 عذراً، لقد تم حظرك من استخدام هذا البوت.")
         return
 
-    # 1. Check if a bank has been selected
     selected_bank = context.user_data.get('selected_bank')
     if not selected_bank:
         await message.reply_text("⚠️ لم تختر البنك بعد! الرجاء الضغط على /start واختيار البنك أولاً.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ابدأ الآن", callback_data="main_menu")]]))
         return
         
-    # 2. Check if the photo has a caption
     if not message.caption:
         await message.reply_text("❌ عذراً، يجب إضافة استفسارك في **شرح الصورة (الكابشن)**. يرجى إعادة إرسال الصورة مع الشرح.", parse_mode=ParseMode.MARKDOWN)
         return
 
-    # 3. Process the question
     question_id = str(uuid.uuid4())
     question_data = {
-        'question_id': question_id,
-        'user_id': user.id,
-        'username': user.username or "",
-        'fullname': user.full_name,
-        'message_type': 'صورة',
-        'content': message.caption, # Caption is the content
-        'file_id': message.photo[-1].file_id,
-        'timestamp': datetime.now().isoformat(),
-        'message_id': message.message_id,
-        'bank_number': selected_bank,
+        'question_id': question_id, 'user_id': user.id, 'username': user.username or "", 'fullname': user.full_name,
+        'message_type': 'صورة', 'content': message.caption, 'file_id': message.photo[-1].file_id,
+        'timestamp': datetime.now().isoformat(), 'message_id': message.message_id, 'bank_number': selected_bank,
     }
     questions_data[question_id] = question_data
     save_data(questions_data, DATA_FILE)
     
-    # Update user stats
     str_user_id = str(user.id)
     if str_user_id not in active_users: active_users[str_user_id] = {"first_name": user.first_name, "last_name": user.last_name or "", "username": user.username or "", "first_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "message_count": 0}
     active_users[str_user_id]["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     active_users[str_user_id]["message_count"] = active_users[str_user_id].get("message_count", 0) + 1
     save_users_data()
 
-    # Reset state and confirm
     context.user_data.pop('selected_bank', None)
     await message.reply_text("👍 استفسارك وصل بنجاح، شكراً لك! سيتم الرد عليك قريباً.\n\nيمكنك إرسال استفسار جديد بالضغط على /start.")
     
-    # Forward to the correct topic in the admin group
     topic_id = TOPIC_IDS.get(selected_bank)
     if topic_id and topic_id != 0:
         await forward_to_admin_topic(context, question_data, topic_id)
     else:
-        logger.warning(f"No valid Topic ID found for bank {selected_bank}. Forwarding to main group.")
-        await forward_to_admin_topic(context, question_data, None) # Forward to general group if topic not found
+        logger.warning(f"No valid Topic ID for bank {selected_bank}. Forwarding to main group.")
+        await forward_to_admin_topic(context, question_data, None)
 
-# NEW: Handler to guide users sending text instead of photos
 async def handle_text_message(update: Update, context: CallbackContext) -> None:
     user, message = update.effective_user, update.message
     if not user or not message or is_user_banned(user.id): return
 
-    # If user has selected a bank, guide them to send a photo
     if context.user_data.get('selected_bank'):
         await message.reply_text("⏳ في انتظار الصورة... الرجاء إرسال **صورة** السؤال الآن.", parse_mode=ParseMode.MARKDOWN)
-    else: # If no bank selected, guide them to start
+    else:
         await message.reply_text("لبدء إرسال استفسار، يرجى الضغط على /start واختيار البنك أولاً.")
 
-
-# MODIFIED: forward_to_admin_topic now accepts a topic_id
+# --- FORWARDING AND ADMIN REPLIES ---
 async def forward_to_admin_topic(context: CallbackContext, q_data: Dict, topic_id: int or None):
     safe_fullname = escape_legacy_markdown(q_data['fullname'])
     safe_username = escape_legacy_markdown(q_data['username']) if q_data['username'] else "غير متوفر"
     
     caption = (f"**استفسار جديد - بنك رقم {q_data['bank_number']}** 📥\n"
+               f"**التوجيه إلى Topic ID:** `{topic_id}`\n"
                f"**من:** {safe_fullname}\n"
                f"**يوزر:** @{safe_username}\n"
-               f"**ID:** `{q_data['user_id']}`\n\n"
+               f"**ID المستخدم:** `{q_data['user_id']}`\n\n"
                f"**نص الاستفسار:**\n{q_data.get('content') or ''}")
 
     replies_data[q_data['question_id']] = {'user_id': q_data['user_id'], 'user_message_id': q_data['message_id'], 'admin_message_id': None}
     
     try:
         sent_message = await context.bot.send_photo(
-            chat_id=ADMIN_GROUP_ID,
-            photo=q_data['file_id'],
-            caption=caption,
-            parse_mode=ParseMode.MARKDOWN,
-            message_thread_id=topic_id  # This is the key for sending to a topic
+            chat_id=ADMIN_GROUP_ID, photo=q_data['file_id'], caption=caption,
+            parse_mode=ParseMode.MARKDOWN, message_thread_id=topic_id
         )
-
         if sent_message:
             replies_data[q_data['question_id']]['admin_message_id'] = sent_message.message_id
             save_data(replies_data, REPLIES_FILE)
     except Exception as e:
         logger.error(f"Error forwarding to admin group topic {topic_id}: {e}")
-        # Fallback: try sending to the main group if topic fails
-        try:
-            await context.bot.send_message(ADMIN_GROUP_ID, text=f"⚠️ فشل الإرسال للتوبيك. رسالة للطوارئ:\n{caption}")
-        except Exception as fallback_e:
-            logger.error(f"Fallback sending also failed: {fallback_e}")
-
-# --- ADMIN AND OTHER FUNCTIONS (Mostly Unchanged) ---
-# The admin reply logic should work as is, as it replies based on message_id, which is unique across topics.
-# Other admin commands like /stats, /ban, /export remain the same.
 
 async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     if not update.message or not update.message.reply_to_message: return
@@ -349,75 +288,164 @@ async def handle_admin_reply(update: Update, context: CallbackContext) -> None:
     user_id, user_msg_id = reply_data['user_id'], reply_data['user_message_id']
     
     try:
-        # Replying to the user doesn't need special handling, it goes to the private chat
         await update.message.copy(chat_id=user_id, reply_to_message_id=user_msg_id)
         await update.message.reply_text("✅ تم إرسال ردك للطالب بنجاح.")
     except Exception as e:
         logger.error(f"Error sending reply to user: {e}")
         await update.message.reply_text(f"❌ فشل إرسال الرد. قد يكون المستخدم قد حظر البوت.\nالخطأ: {e}")
 
-# All other functions like stats_command, export_command, broadcast_command, ban_command, etc. can remain here without changes.
+# --- ALL ADMIN COMMANDS ---
 async def stats_command(update: Update, context: CallbackContext) -> None:
-    if update.effective_chat.id != ADMIN_GROUP_ID: return
-    
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
     total_questions = len(questions_data)
     unique_users = len(get_all_user_ids())
-    
-    # NEW: Stats by bank
     bank_counts = {}
     for q in questions_data.values():
         bank_num = q.get('bank_number', 'غير محدد')
         bank_counts[bank_num] = bank_counts.get(bank_num, 0) + 1
 
-    stats_text = f"📈 **نظرة على إحصائيات البوت:**\n\n"
-    stats_text += f"📥 إجمالي الاستفسارات: {total_questions}\n"
-    stats_text += f"👥 عدد المستخدمين الفريدين: {unique_users}\n\n"
-    stats_text += f"🏦 **تصنيف الاستفسارات حسب البنك:**\n"
-    stats_text += "\n".join([f"• البنك رقم {bank}: {count}" for bank, count in bank_counts.items()])
-    
+    stats_text = (f"📈 **إحصائيات البوت:**\n\n"
+                  f"📥 إجمالي الاستفسارات: {total_questions}\n"
+                  f"👥 المستخدمون الفريدون: {unique_users}\n\n"
+                  f"🏦 **الاستفسارات حسب البنك:**\n" +
+                  "\n".join([f"• البنك رقم {bank}: {count}" for bank, count in bank_counts.items()]))
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
 
-# --- Main application setup ---
+async def export_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    try:
+        for file_path, name in {DATA_FILE: "questions", REPLIES_FILE: "replies", USERS_FILE: "users", BANS_FILE: "banned"}.items():
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    await update.message.reply_document(document=f, filename=f"{name}_{timestamp}.json")
+        await update.message.reply_text("✅ **اكتمل تصدير البيانات بنجاح**", parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        await update.message.reply_text(f"❌ حدث خطأ أثناء التصدير: {e}")
+
+async def import_command(update: Update, context: CallbackContext) -> None:
+    global questions_data, replies_data, active_users, banned_users
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
+    if not update.message.reply_to_message or not update.message.reply_to_message.document:
+        await update.message.reply_text("⚠️ لاستخدام هذا الأمر، أرسل ملف JSON ثم قم بالرد عليه بالأمر `/import`.")
+        return
+    doc, file_name = update.message.reply_to_message.document, doc.file_name.lower()
+    target_file = None
+    if "questions" in file_name: target_file = DATA_FILE
+    elif "replies" in file_name: target_file = REPLIES_FILE
+    elif "users" in file_name: target_file = USERS_FILE
+    elif "banned" in file_name: target_file = BANS_FILE
+    else: return await update.message.reply_text("❌ لم يتم التعرف على الملف.")
+    try:
+        json_file = await doc.get_file()
+        file_bytes = await json_file.download_as_bytearray()
+        json.loads(file_bytes.decode('utf-8'))
+        with open(target_file, 'wb') as f: f.write(file_bytes)
+        questions_data, replies_data, active_users, banned_users = load_data(DATA_FILE), load_data(REPLIES_FILE), load_users_data(), load_data(BANS_FILE)
+        await update.message.reply_text(f"✅ تم استيراد وتحديث `{target_file}` بنجاح.")
+    except Exception as e: await update.message.reply_text(f"❌ حدث خطأ: {e}")
+
+async def broadcast_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
+    user_count = len(get_all_user_ids())
+    waiting_for_broadcast[update.effective_user.id] = True
+    await update.message.reply_text(f"📡 **وضع الإرسال الجماعي**\nسيتم الإرسال إلى: {user_count} مستخدم.\n\nأرسل الآن الرسالة التي تود بثها.")
+
+async def handle_broadcast_message(update: Update, context: CallbackContext) -> None:
+    if not update.message or not update.effective_user: return
+    admin_id = update.effective_user.id
+    if waiting_for_broadcast.get(admin_id):
+        user_ids = get_all_user_ids()
+        if not user_ids: 
+            await update.message.reply_text("لا يوجد مستخدمون لإرسال الرسالة إليهم.")
+        else:
+            await update.message.reply_text(f"⏳ جارٍ بدء الإرسال إلى {len(user_ids)} مستخدم...")
+            successful, failed = 0, 0
+            for user_id in user_ids:
+                try:
+                    await context.bot.copy_message(user_id, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
+                    successful += 1
+                    await asyncio.sleep(0.05)
+                except Exception as e:
+                    logger.error(f"Failed to broadcast to {user_id}: {e}")
+                    failed += 1
+            await update.message.reply_text(f"**📣 اكتمل الإرسال:**\n👍 نجح: {successful}\n👎 فشل: {failed}", parse_mode=ParseMode.MARKDOWN)
+        waiting_for_broadcast[admin_id] = False
+
+async def help_command(update: Update, context: CallbackContext) -> None:
+    is_admin = update.effective_chat and update.effective_chat.id == ADMIN_GROUP_ID
+    help_text = ("**🛠️ أوامر المشرفين:**\n/stats\n/export\n/import\n/broadcast\n/ban `id` `[reason]`\n/unban `id`\n/banned") if is_admin else ("**👋 للمساعدة:**\n/start - بدء/عودة للقائمة الرئيسية")
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
+async def ban_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID or not update.effective_user: return
+    if not context.args: return await update.message.reply_text("الصيغة: /ban <user_id> [السبب]")
+    try:
+        user_id, reason = int(context.args[0]), " ".join(context.args[1:]) or "بدون سبب"
+        if is_user_banned(user_id): return await update.message.reply_text(f"المستخدم {user_id} محظور بالفعل.")
+        banned_users[str(user_id)] = {'banned_at': datetime.now().isoformat(), 'banned_by': update.effective_user.id, 'reason': reason}
+        save_data(banned_users, BANS_FILE)
+        await update.message.reply_text(f"🚫 تم حظر المستخدم {user_id}.\nالسبب: {reason}")
+    except (ValueError, IndexError): await update.message.reply_text("معرف المستخدم غير صحيح.")
+
+async def unban_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
+    if not context.args: return await update.message.reply_text("الصيغة: /unban <user_id>")
+    try:
+        user_id = int(context.args[0])
+        if not is_user_banned(user_id): return await update.message.reply_text(f"المستخدم {user_id} ليس محظوراً.")
+        if str(user_id) in banned_users: del banned_users[str(user_id)]
+        save_data(banned_users, BANS_FILE)
+        await update.message.reply_text(f"✅ تم رفع الحظر عن المستخدم {user_id}.")
+    except (ValueError, IndexError): await update.message.reply_text("معرف المستخدم غير صحيح.")
+
+async def banned_list_command(update: Update, context: CallbackContext) -> None:
+    if not update.effective_chat or update.effective_chat.id != ADMIN_GROUP_ID: return
+    if not banned_users: return await update.message.reply_text("لا يوجد مستخدمون محظورون حالياً.")
+    message = f"**🚫 قائمة المحظورين ({len(banned_users)}):**\n\n"
+    for uid, data in banned_users.items():
+        message += f"- ID: `{uid}` | السبب: {data['reason']}\n"
+    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+
+async def handle_admin_messages(update: Update, context: CallbackContext) -> None:
+    if not update.message or not update.effective_user: return
+    if update.message.reply_to_message:
+        await handle_admin_reply(update, context)
+    elif waiting_for_broadcast.get(update.effective_user.id):
+        await handle_broadcast_message(update, context)
+
+# --- MAIN APPLICATION SETUP ---
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
+    # User-facing handlers
     application.add_handler(CommandHandler("start", start_command))
-    # ... other admin commands are unchanged ...
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CallbackQueryHandler(select_bank_handler, pattern="^select_bank:"))
+    application.add_handler(CallbackQueryHandler(caption_help_handler, pattern="^caption_help$"))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(instructions|main_menu)"))
+
+    # Admin command handlers
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("export", export_command))
+    application.add_handler(CommandHandler("import", import_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("ban", ban_command))
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("banned", banned_list_command))
-    application.add_handler(CommandHandler("import", import_command))
     
-    # MODIFIED: New callback query handlers
-    application.add_handler(CallbackQueryHandler(select_bank_handler, pattern="^select_bank:"))
-    application.add_handler(CallbackQueryHandler(caption_help_handler, pattern="^caption_help$"))
-    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(instructions|main_menu)"))
-    
-    # MODIFIED: New specific message handlers for private chats
+    # Message handlers
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO & ~filters.COMMAND, handle_photo_question))
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_text_message))
-    
-    # Admin group handler (unchanged)
-    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & filters.REPLY & ~filters.COMMAND, handle_admin_reply))
+    application.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & ~filters.COMMAND, handle_admin_messages))
 
-    # Run the bot
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN environment variable is not set!")
+    if not BOT_TOKEN or not ADMIN_GROUP_ID:
+        logger.error("BOT_TOKEN or ADMIN_GROUP_ID environment variables are not set!")
         exit(1)
-    if not ADMIN_GROUP_ID or ADMIN_GROUP_ID == 0:
-        logger.error("ADMIN_GROUP_ID environment variable is not set or invalid!")
-        exit(1)
-    
-    # NEW: Check if Topic IDs are set
     for bank, topic_id in TOPIC_IDS.items():
         if topic_id == 0:
-            logger.warning(f"TOPIC_ID_BANK_{bank} is not set in .env file. Submissions for this bank will go to the main group.")
-            
+            logger.warning(f"TOPIC_ID_BANK_{bank} is not set. Submissions will go to the main group.")
     main()
