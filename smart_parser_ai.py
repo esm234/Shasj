@@ -52,7 +52,7 @@ PROMPT_TEMPLATE = """
 ---
 """
 
-def parse_questions_with_ai(text: str) -> List[Dict[str, Any]]:
+def parse_question_with_ai(text: str) -> List[Dict[str, Any]]:
     """
     تحليل نصوص طويلة تحتوي على عدة أسئلة، مع اكتشاف رقم السؤال والخيارات بدقة.
     """
