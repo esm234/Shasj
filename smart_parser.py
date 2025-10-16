@@ -3,47 +3,68 @@ from typing import Dict, List
 
 def parse_question_text(text: str) -> Dict[str, any]:
     """
-    يحلل النص العادي ويحاول استخراج السؤال والخيارات.
+    يحلل النص باستخدام الكلمات المفتاحية والأنماط لفصل السؤال عن الخيارات.
     """
-    lines = text.strip().split('\n')
+    # 1. البحث باستخدام الكلمات المفتاحية (الطريقة الأساسية)
+    option_keywords = ['الاختيارات', 'الخيارات']
+    question_text = text
+    options_text = ''
     
-    # Regex للتعرف على أنماط الخيارات (أ), أ-, 1., 1-, *, -)
-    option_pattern = re.compile(r'^\s*([أ-ي]\s*[.)-]|[\w]\s*[.)-]|[1-9]\d*\s*[.)-]|[*•-]\s+)', re.IGNORECASE)
+    for keyword in option_keywords:
+        # البحث عن الكلمة المفتاحية مع تجاهل حالة الأحرف
+        match = re.search(r'\b' + keyword + r'\b.*', text, re.IGNORECASE | re.DOTALL)
+        if match:
+            # كل ما قبل الكلمة المفتاحية هو السؤال
+            question_text = text[:match.start()].strip()
+            # كل ما بعدها هو الخيارات
+            options_text = text[match.start():].strip()
+            # إزالة الكلمة المفتاحية نفسها من بداية نص الخيارات
+            options_text = re.sub(r'^\s*' + keyword + r'\s*[:\n]*', '', options_text, flags=re.IGNORECASE).strip()
+            break
 
-    question_lines = []
-    option_lines = []
+    # 2. تنظيف السؤال من الجمل الحوارية
+    common_intros = [
+        "يا جماعة", "جاني سؤال", "جالي سؤال", "السؤال كان", "كان فيه سؤال", "سؤال اليوم",
+        "للعلم مش متاكده", "للعلم اخترت", "اعتقد صيغه دقيقه", "اللفظي كان في قطعه"
+    ]
+    for intro in common_intros:
+        question_text = re.sub(r'.*' + intro + r'.*[\n:]*', '', question_text, flags=re.IGNORECASE).strip()
     
-    is_reading_options = False
+    # 3. استخراج الخيارات من نص الخيارات
+    options = []
+    if options_text:
+        # تقسيم الخيارات حسب الأسطر الجديدة
+        options = [line.strip() for line in options_text.split('\n') if line.strip()]
+        # تنظيف إضافي للخيارات (إزالة الترقيم إن وجد)
+        option_pattern = re.compile(r'^\s*([أ-ي]\s*[.)-]|[\w]\s*[.)-]|[1-9]\d*\s*[.)-]|[*•-]\s+)', re.IGNORECASE)
+        options = [option_pattern.sub('', opt).strip() for opt in options]
+    
+    # 4. إذا لم يتم العثور على خيارات عبر الكلمات المفتاحية، نستخدم الطريقة القديمة كخطة بديلة
+    if not options and not options_text:
+        lines = text.strip().split('\n')
+        option_pattern = re.compile(r'^\s*([أ-ي]\s*[.)-]|[\w]\s*[.)-]|[1-9]\d*\s*[.)-]|[*•-]\s+)', re.IGNORECASE)
+        question_lines = []
+        option_lines = []
+        is_reading_options = False
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        if option_pattern.match(line):
-            is_reading_options = True
+        for line in lines:
+            if option_pattern.match(line.strip()):
+                is_reading_options = True
+            if is_reading_options:
+                clean_option = option_pattern.sub('', line.strip()).strip()
+                if clean_option: option_lines.append(clean_option)
+            else:
+                question_lines.append(line)
         
-        common_intros = ["جاني سؤال", "جالي سؤال", "السؤال كان", "كان فيه سؤال", "سؤال اليوم"]
-        if not is_reading_options and any(intro in line.lower() for intro in common_intros) and len(line) < 35:
-            continue
+        if option_lines:
+            question_text = "\n".join(question_lines).strip()
+            options = option_lines
 
-        if is_reading_options:
-            clean_option = option_pattern.sub('', line).strip()
-            if clean_option:
-                option_lines.append(clean_option)
-        else:
-            question_lines.append(line)
+    # التأكد من أن السؤال ليس فارغًا
+    if not question_text.strip():
+        question_text = text # إذا فشل كل شيء، اعتبر النص كله سؤال
 
-    if not option_lines:
-        return {
-            "question_text": text.strip(),
-            "options": []
-        }
-        
-    final_question = " ".join(question_lines).strip()
-    final_question = re.sub(r'الخيارات هي:|الخيارات:|الاختيارات هي:|الاختيارات:$', '', final_question, flags=re.IGNORECASE).strip()
-    
     return {
-        "question_text": final_question,
-        "options": option_lines
+        "question_text": question_text.strip(),
+        "options": [opt for opt in options if opt] # إزالة الخيارات الفارغة
     }
